@@ -1,0 +1,6 @@
+.env
+*.db
+*.fits
+
+# ローカルテスト用ディレクトリ
+local_test/
