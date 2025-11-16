@@ -19,11 +19,11 @@ import classify_spec_location as csl
 load_dotenv("config.env")
 
 DB_PATH = os.getenv("DB_PATH")
-RAW_DARK_PATH = os.getenv("RAW_DARK_PATH")
 DARK4LOCATE_DIR = os.getenv("DARK4LOCATE_DIR")
 RAID_PC = os.getenv("RAID_PC")
 RAID_DIR = os.getenv("RAID_DIR")
-DST_DIR = os.getenv("DST_DIR")
+RAWDATA_DIR= os.getenv("RAWDATA_DIR")
+WORK_DIR = os.getenv("WORK_DIR")
 
 QUALITY_HIST_RANGE = (55000, 65536)
 BINS = 1000
@@ -58,17 +58,25 @@ def find_dark(fitsname, darkpath):
     return fits.getdata(matches[0])
 
 
-def db_search(conn: sqlite3.Connection, object_name, date_label):
+def db_search(conn: sqlite3.Connection, object_name, date_label=None) -> Dict[str, List[str]]:
     
     """
     framesテーブルからAr系のframeを抽出し、
     {date_label: [base_name, ...]} の辞書を返す。
     """
-    query = (
-        "SELECT date_label, base_name "
-        "FROM frames "
-        f"WHERE object LIKE '{object_name}' "
-    )
+    if date_label is None:
+        query = (
+            "SELECT date_label, base_name "
+            "FROM frames "
+            f"WHERE object LIKE '{object_name}' "
+        )
+    else:
+        query = (
+            "SELECT date_label, base_name "
+            "FROM frames "
+            f"WHERE object LIKE '{object_name}' "
+            f"AND date_label = '{date_label}' "
+        )
     cur = conn.cursor()
     cur.execute(query)
 
@@ -78,13 +86,28 @@ def db_search(conn: sqlite3.Connection, object_name, date_label):
     return filepath_dict
     
 
-def do_scp(date_label: str, Number: int) -> None:
-    src = f"{RAID_PC}:{RAID_DIR}/{date_label}/spec/*{Number:04}*CDS*.fits"
-    dst = DST_DIR
-    cmd = ["scp", "-r", src, dst]
+def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]) -> None:
+    # Extract Num1 from basenames
+    num1_set = set()
+    for bn in base_name_list:
+        m = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}\.fits", bn)
+        if m:
+            num1_set.add(m.group(1))
 
-    logging.info(f"COPY: {src}")
-    subprocess.run(cmd, check=True)
+    # If nothing matched, do nothing
+    if not num1_set:
+        logging.warning(f"No valid Num1 found in base_name_list for {date_label}")
+        return
+
+    # Perform scp per Num1
+    for num1 in sorted(num1_set):
+        src = f"{RAID_PC}:{RAID_DIR}/{date_label}/spec/spec{date_label}*{num1}*CDS*.fits"
+        dst = f"{RAWDATA_DIR}/{object_name}/{date_label}"
+        os.makedirs(dst, exist_ok=True)
+        cmd = ["scp", src, dst]
+
+        logging.info(f"COPY: {src}")
+        subprocess.run(cmd, check=True)
 
 
 def compute_hist(data: np.ndarray, bins: int = BINS, rng=QUALITY_HIST_RANGE):
@@ -194,7 +217,17 @@ def search_combination_CDSnum(fitslist1, fitslist2):
 
 
 def reduction_main():
-    object_name = sys.argv[1]
-    date_label = sys.argv[2]
+    if len(sys.argv) == 3:
+        object_name = sys.argv[1]
+        date_label = sys.argv[2]
+    elif len(sys.argv) == 2:
+        object_name = sys.argv[1]
+        date_label = None
+    conn = sqlite3.connect(DB_PATH)
     filepath_dict = db_search(conn, object_name, date_label)
-    
+    conn.close()
+    for date_label, base_name_list in filepath_dict.items():
+        do_scp_raw_fits(date_label, object_name, base_name_list)
+        raw_datalist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
+        quality_check(raw_datalist)
+        

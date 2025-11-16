@@ -67,6 +67,7 @@ spec 検出、mask して  < saturation
 >- 引数 ()
 >- まずは１天体,全日付の reductionを前提
 db_search の出力を do_scp 用に加工する。
+全ての画像の quality check を行う。
 
 
 
