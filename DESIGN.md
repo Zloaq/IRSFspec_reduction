@@ -15,10 +15,18 @@ QUALITY_HIST_RANGE=(55000, 65536), BINS=1000
 
 
 
-### 3.1 関数仕様
+### 3.1 irsf_reduction.py
 
 >**_load_fits**
 >- FITSファイルを開いてヘッダとデータを返す。存在確認と例外処理あり。
+
+>**db_search**
+>- 引数 (conn, object_name, date_label)
+>- object_name で frames テーブルを検索し、date_label 毎のベース名リスト辞書を返す。
+
+>**do_scp**
+>- 引数 (date_label, Number)
+>- RAIDから指定ファイルをDST_DIRへscpコピー。失敗時は例外発生。
 
 >**compute_hist**
 >- 引数 (data, bins=BINS, rng=QUALITY_HIST_RANGE)
@@ -33,29 +41,38 @@ QUALITY_HIST_RANGE=(55000, 65536), BINS=1000
 >- 引数 (data, bins=BINS, rng=QUALITY_HIST_RANGE, log_hist=False)
 >- ヒストグラム計算と面積算出をまとめて実行しスコアを返す。
 
->**db_search**
->- 引数 (conn, object_name, date_label)
->- object_name で frames テーブルを検索し、date_label 毎のベース名リスト辞書を返す。
-
->**do_scp**
->- 引数 (date_label, Number)
->- RAIDから指定ファイルをDST_DIRへscpコピー。失敗時は例外発生。
-
 >**quality_check**
 >- 引数 (fitslist)
 >- 各FITSの面積を計算し、エラー判定したファイルを除外して合格リストを返す。
 
->**classify_AB**
->- 引数 (fitsdict)
->- CDS画像のA/B位置分類を想定した未実装関数。
+>**classify_spec_location**
+>- 引数 (fitsdict{No:fitslist}) って感じかな。
+>- 中心 pix 同士の幅 >  典型的な像の広がり * 2 + buff  
+最も明るいやつだけでいいか？だって quality check 通ってるんだもんね？  
+でも誤検出で出ない可能性もあるかなあ。list にしとくかあ。  
+>- spec_locator 通したら mask が返ってきます。
 
 >**reject_saturation**
->- 引数 なし
->- 飽和除外処理を想定した未実装関数。
+>- 引数 (fitslist)
+>- リストの中を CDS30 の側から調べてサチってたら消したいけど、どこにスペクトルがあるかわかんねえな。　　
+もう一回検出するのは馬鹿らしいけど、堅牢で分かりやすい処理って考えたら別にいいか。
+spec 検出、mask して  < saturation 
 
->**search_combination_CDS_n_AB**
->- 引数 なし
->- CDS×ABの組合せ探索を想定した未実装関数。
+>**search_combination_CDSnum**
+>- 引数 ()
+>- 全部入れてから組み合わせ見なきゃいけないよねえ。
+とりあえず二つのリストだけにした。
+
+>**reduction_main**
+>- 引数 ()
+>- まずは１天体,全日付の reductionを前提
+db_search の出力を do_scp 用に加工する。
+
+
+
+### 3.2 spec_locator.py
+
+
 
 
 ### 3.2 全体フロー（簡易）

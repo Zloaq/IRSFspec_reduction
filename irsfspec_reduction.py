@@ -2,16 +2,21 @@
 
 from dotenv import load_dotenv
 import os
+import sys
 import sqlite3
 import subprocess
 import logging
+from pathlib import Path
+import re
+import glob
 import astropy.io.fits as fits
 import numpy as np
 from typing import Dict, List, Set, Tuple
 
 import spec_locator
+import classify_spec_location as csl
 
-load_dotenv()
+load_dotenv("config.env")
 
 DB_PATH = os.getenv("DB_PATH")
 RAW_DARK_PATH = os.getenv("RAW_DARK_PATH")
@@ -22,6 +27,7 @@ DST_DIR = os.getenv("DST_DIR")
 
 QUALITY_HIST_RANGE = (55000, 65536)
 BINS = 1000
+SATURATION_LEVEL = 18000
 
 
 
@@ -35,6 +41,21 @@ def _load_fits(fits_path: str) -> Tuple[fits.Header, np.ndarray]:
         raise ValueError(f"No data in primary HDU: {fits_path}")
     data = np.asarray(data, dtype=np.float64)
     return header, data
+
+
+def find_dark(fitsname, darkpath):
+    fits_basename = Path(fitsname).name
+    m = re.match(r"(CDS\d{2})", fits_basename)
+    if not m:
+        raise ValueError(f"Could not extract CDS number from filename: {fits_basename}")
+    cds_num = m.group(1)
+
+    pattern = str(Path(darkpath) / f"*{cds_num}.fits")
+    matches = glob.glob(pattern)
+    if not matches:
+        raise FileNotFoundError(f"No dark frame found for {cds_num} in {darkpath}")
+
+    return fits.getdata(matches[0])
 
 
 def db_search(conn: sqlite3.Connection, object_name, date_label):
@@ -114,16 +135,66 @@ def quality_check(fitslist: List[str]):
     return pass_list
 
 
-def classify_AB(fitsdict: Dict[str, List[str]]):
+def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
+    """
+    fitsdict: {number: [fits_path, ...]}
+    それぞれのfitsについて mask の True を包含する最小矩形を求め、
+    その矩形の中心を計算する。
+    Returns: {No: label}
+    """
+    result: Dict[str, Dict[str, object]] = {}
 
     for number, fitslist in fitsdict.items():
-        box = []
-        
+        centers: Dict[str, int] = {}
+        files: List[str] = []
+        fitslist.sort()
+        for fits_path in fitslist[::-1]:
+            header, data = _load_fits(fits_path)
+            dark = find_dark(fits_path, DARK4LOCATE_DIR)
+            image = data - dark
+            mask = spec_locator.spec_locator(image)
+            if mask is None:
+                continue
+        if mask is None:
+            center_y = None
+        else:
+            center_y = csl.vertical_center_from_mask(mask)
+        centers[number] = center_y
+    result = csl.classify_spec_location(centers)
+
+    return result
 
 
-def reject_saturation():
+def reject_saturation(fitslist: List[str]):
+    pass_fitslist = []
+    for fits_path in fitslist:
+        header, data = _load_fits(fits_path)
+        mask = spec_locator.spec_locator(data)
+        if mask is None:
+            continue
+        if data[mask] < SATURATION_LEVEL:
+            continue
+        pass_fitslist.append(fits_path)
+    return pass_fitslist
+
+
+
+def search_combination_CDSnum(fitslist1, fitslist2):
+    fitslist1.sort()
+    fitslist2.sort()
+    cdsnum1 = [ re.match(r"CDS(\d{2})", os.path.basename(fits_path)).group(1) for fits_path in fitslist1 ]
+    cdsnum2 = [ re.match(r"CDS(\d{2})", os.path.basename(fits_path)).group(1) for fits_path in fitslist2 ]
+    common = set(cdsnum1) & set(cdsnum2)
+    firstnum = common[0]
+    lastnum = common[-1]
+    fits_tuple1 = (fitslist1[cdsnum1.index(firstnum)], fitslist1[cdsnum1.index(lastnum)])
+    fits_tuple2 = (fitslist2[cdsnum2.index(firstnum)], fitslist2[cdsnum2.index(lastnum)])
+    return fits_tuple1, fits_tuple2
+
+
+
+def reduction_main():
+    object_name = sys.argv[1]
+    date_label = sys.argv[2]
+    filepath_dict = db_search(conn, object_name, date_label)
     
-    pass
-
-def search_combination_CDS_n_AB():
-    pass

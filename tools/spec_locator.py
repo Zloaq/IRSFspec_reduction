@@ -8,27 +8,37 @@ import matplotlib.pyplot as plt
 from astropy.io import fits
 from scipy.ndimage import label
 from pathlib import Path
+from dataclasses import dataclass
 
 
-def find_dark(fitsname, darkpath):
-    fits_basename = Path(fitsname).name
-    m = re.match(r"(CDS\d{2})", fits_basename)
-    if not m:
-        raise ValueError(f"Could not extract CDS number from filename: {fits_basename}")
-    cds_num = m.group(1)
+@dataclass(frozen=True)
+class DeviceConfig:
+    # calc_sigma window
+    center_x: int = 300
+    center_y: int = 30
+    width: int = 500
+    height: int = 30
 
-    pattern = str(Path(darkpath) / f"*{cds_num}.fits")
-    matches = glob.glob(pattern)
-    if not matches:
-        raise FileNotFoundError(f"No dark frame found for {cds_num} in {darkpath}")
+    # band lines for mask_outside_band_to_zero
+    band_a1: float = 2.3
+    band_b1: float = -50.0
+    band_a2: float = 2.5
+    band_b2: float = -1100.0
 
-    return fits.getdata(matches[0])
+    # find_box geometry filters
+    min_area: int = 200
+    y_span_lt: int = 25   # keep condition: y_span < 25
+    x_span_gt: int = 25   # keep condition: x_span > 25
+
+    # thresholds for spec_locator loop
+    thresholds: tuple = tuple(np.arange(4.0, 0.99, -0.5))
+
+DEFAULT_CONFIG = DeviceConfig()
 
 
-def calc_sigma(fits_data):
-
-    center_x, center_y = 300, 30
-    width, height = 500, 30
+def calc_sigma(fits_data, cfg: DeviceConfig = DEFAULT_CONFIG):
+    center_x, center_y = cfg.center_x, cfg.center_y
+    width, height = cfg.width, cfg.height
 
     rect = fits_data[
         center_y - height // 2 : center_y + height // 2,
@@ -38,6 +48,7 @@ def calc_sigma(fits_data):
     rms = np.sqrt(np.mean((rect - median) ** 2))
 
     return {"median": median, "stddev": rms}
+
 
 def mask_outside_band_to_zero(data: np.ndarray, a1: float, b1: float, a2: float, b2: float) -> np.ndarray:
     """
@@ -60,9 +71,13 @@ def mask_outside_band_to_zero(data: np.ndarray, a1: float, b1: float, a2: float,
     return out
 
 
-def mask_region_to_zero(data: np.ndarray) -> np.ndarray:
-    """元コードの (a,b) を踏襲し、帯域の外側を 0 にする。"""
-    return mask_outside_band_to_zero(data, a1=2.3, b1=-50, a2=2.5, b2=-1100)
+def mask_region_to_zero(data: np.ndarray, cfg: DeviceConfig = DEFAULT_CONFIG) -> np.ndarray:
+    """帯域の外側を 0 にする（装置依存パラメータは cfg から）。"""
+    return mask_outside_band_to_zero(
+        data,
+        a1=cfg.band_a1, b1=cfg.band_b1,
+        a2=cfg.band_a2, b2=cfg.band_b2
+    )
 
 
 def data_mask(data, sky_noise_data, threshold=1.0):
@@ -70,9 +85,7 @@ def data_mask(data, sky_noise_data, threshold=1.0):
     return data <= thr
 
 
-
-def find_box(data, sky_noise_data, threshold=1, min_area=200):
-
+def find_box(data, sky_noise_data, threshold=1, cfg: DeviceConfig = DEFAULT_CONFIG):
 
     mask = data_mask(data, sky_noise_data, threshold)
     labeled, num_features = label(mask.astype(np.uint8))
@@ -80,7 +93,7 @@ def find_box(data, sky_noise_data, threshold=1, min_area=200):
         return np.zeros_like(mask, dtype=bool)
 
     areas = np.bincount(labeled.ravel())[1:]
-    valid_labels = np.where(areas >= min_area)[0] + 1  # ラベル番号は1始まり
+    valid_labels = np.where(areas >= cfg.min_area)[0] + 1  # ラベル番号は1始まり
 
     final_labels = []
     for label_id in valid_labels:
@@ -89,7 +102,7 @@ def find_box(data, sky_noise_data, threshold=1, min_area=200):
         y_coords = coords[:, 0]
         x_span = x_coords.max() - x_coords.min() + 1
         y_span = y_coords.max() - y_coords.min() + 1
-        if y_span < 25 and x_span > 25:
+        if y_span < cfg.y_span_lt and x_span > cfg.x_span_gt:
             final_labels.append(label_id)
 
     combined_mask = np.isin(labeled, final_labels)
@@ -97,20 +110,15 @@ def find_box(data, sky_noise_data, threshold=1, min_area=200):
 
 
 
-def main(fits_data_iterator, DARK_PATH):
-    combined_masks = []
-    for fits_path in fits_data_iterator:
-        data = fits.getdata(fits_path)
-        dark_data = find_dark(fits_path, DARK_PATH)
-        data = data - dark_data
-        sky_noise_data = calc_sigma(data)
-        data = mask_region_to_zero(data)
-        for threshold in np.arange(4.0, 0.99, -0.5):
-            combined_mask = find_box(data, sky_noise_data, threshold)
-            if combined_mask.sum() > 0:
-                break
-        if combined_mask.sum() == 0:
-            combined_masks.append(None)
-            continue
-        combined_masks.append(combined_mask)
-    return combined_masks
+def spec_locator(data, cfg: DeviceConfig = DEFAULT_CONFIG):
+
+    sky_noise_data = calc_sigma(data, cfg)
+    data = mask_region_to_zero(data, cfg)
+    combined_mask = np.zeros_like(data, dtype=bool)
+    for threshold in cfg.thresholds:
+        combined_mask = find_box(data, sky_noise_data, threshold, cfg)
+        if combined_mask is not None and combined_mask.sum() > 0:
+            break
+    if combined_mask is None or combined_mask.sum() == 0:
+        return None
+    return combined_mask
