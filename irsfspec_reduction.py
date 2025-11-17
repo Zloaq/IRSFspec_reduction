@@ -167,6 +167,7 @@ def gen_fitsdict(fitslist: List[str]) -> Dict[str, List[str]]:
     return fitsdict
 
 
+'''
 def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     """
     fitsdict: {number: [fits_path, ...]}
@@ -194,6 +195,48 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
         centers[number] = center_y
     result = csl.classify_spec_location(centers)
 
+    return result
+'''
+
+def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
+    """
+    fitsdict: {number: [fits_path, ...]}
+    各 number について、mask != None となる最初のファイルの中心位置を使う。
+    Returns: {No: label}
+    """
+    centers: Dict[str, float] = {}
+
+    for number, fitslist in fitsdict.items():
+        # CDS 番号の大きい順など、元の意図に合わせて並べ替え
+        fitslist_sorted = sorted(fitslist, reverse=True)
+
+        center_y = None
+
+        for fits_path in fitslist_sorted:
+            header, data = _load_fits(fits_path)
+            dark = find_dark(fits_path, DARK4LOCATE_DIR)
+            image = data - dark
+            mask = spec_locator.spec_locator(image)
+            if mask is None:
+                # このファイルではスペクトルが見つからなかった → 次のファイルへ
+                continue
+
+            # 最初に見つかった mask を採用してループを抜ける
+            center_y = csl.vertical_center_from_mask(mask)
+            break
+
+        if center_y is None:
+            # その番号の全ファイルで mask が見つからなかった → スキップ
+            logging.warning(f"spec_locator failed for all files of No {number}; skipping.")
+            continue
+
+        centers[number] = center_y
+
+    if not centers:
+        raise RuntimeError("No valid spectrum location found in any file.")
+
+    # ここでようやく tools.classify_spec_location に渡す
+    result = csl.classify_spec_location(centers)
     return result
 
 
