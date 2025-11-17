@@ -46,7 +46,7 @@ def _load_fits(fits_path: str) -> Tuple[fits.Header, np.ndarray]:
 
 def find_dark(fitsname, darkpath):
     fits_basename = Path(fitsname).name
-    m = re.match(r"(CDS\d{2})", fits_basename)
+    m = re.search(r"(CDS\d{2})", fits_basename)
     if not m:
         raise ValueError(f"Could not extract CDS number from filename: {fits_basename}")
     cds_num = m.group(1)
