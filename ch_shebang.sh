@@ -1,12 +1,15 @@
 #!/bin/bash
 
-if [ $# -eq 0 ]; then
-    PYTHON_PATH=$(python3 -c "import sys; print(sys.executable)")
-else
-    PYTHON_PATH="$1"
-fi
+PYTHON_PATH=$(python3 -c "import sys; print(sys.executable)")
 
-SCRIPT_PATH=($(ls |grep py\$))
+if [$# -eq 0]; then
+    SCRIPT_PATH=($(ls |grep py\$))
+elif [$# -eq 1]; then
+    SCRIPT_PATH=($(ls $1 |grep py\$))
+else
+    echo "Usage: $0 [directory]"
+    exit 1
+fi
 
 for filename in ${SCRIPT_PATH[@]}; do
 

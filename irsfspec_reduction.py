@@ -312,3 +312,10 @@ def reduction_main():
             cds1_path = create_CDS_image(fitslist1[idx1_max], fitslist2[idx1_min])
             cds2_path = create_CDS_image(fitslist1[idx2_max], fitslist2[idx2_min])
             subtract_AB_image(cds1_path, cds2_path)
+
+
+if __name__ == "__main__":
+    if len(sys.argv) != 2 and len(sys.argv) != 3:
+        print("Usage: python irsfspec_reduction.py [object_name] [date_label]")
+        sys.exit(1)
+    reduction_main()
