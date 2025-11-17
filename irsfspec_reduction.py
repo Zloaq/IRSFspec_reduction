@@ -246,10 +246,20 @@ def reject_saturation(fitslist: List[str]):
         header, data = _load_fits(fits_path)
         mask = spec_locator.spec_locator(data)
         if mask is None:
+            # スペクトル位置が特定できないフレームは使わない
             continue
-        if data[mask] < SATURATION_LEVEL:
+
+        # スペクトル領域の画素値を取り出す
+        spec_values = data[mask]
+
+        # SATURATION_LEVEL 以上の値が 1 つでもあれば「飽和している」とみなして除外
+        if np.any(spec_values >= SATURATION_LEVEL):
+            logging.warning(f"Saturated frame rejected: {os.path.basename(fits_path)}")
             continue
+
+        # ここまで来たら飽和していないので採用
         pass_fitslist.append(fits_path)
+
     return pass_fitslist
 
 
