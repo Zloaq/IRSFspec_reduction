@@ -14,8 +14,8 @@ import numpy as np
 from itertools import combinations
 from typing import Dict, List, Set, Tuple
 
-import spec_locator
-import classify_spec_location as csl
+from tools import spec_locator
+from tools import classify_spec_location as csl
 
 load_dotenv("config.env")
 
