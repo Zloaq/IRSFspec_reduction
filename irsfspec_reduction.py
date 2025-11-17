@@ -11,6 +11,7 @@ import re
 import glob
 import astropy.io.fits as fits
 import numpy as np
+from itertools import combinations
 from typing import Dict, List, Set, Tuple
 
 import spec_locator
@@ -158,6 +159,14 @@ def quality_check(fitslist: List[str]):
     return pass_list
 
 
+def gen_fitsdict(fitslist: List[str]) -> Dict[str, List[str]]:
+    fitsdict: Dict[str, List[str]] = {}
+    for fits_path in fitslist:
+        num1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}\.fits", os.path.basename(fits_path)).group(1)
+        fitsdict.setdefault(num1, []).append(fits_path)
+    return fitsdict
+
+
 def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     """
     fitsdict: {number: [fits_path, ...]}
@@ -202,17 +211,76 @@ def reject_saturation(fitslist: List[str]):
 
 
 
-def search_combination_CDSnum(fitslist1, fitslist2):
-    fitslist1.sort()
-    fitslist2.sort()
-    cdsnum1 = [ re.match(r"CDS(\d{2})", os.path.basename(fits_path)).group(1) for fits_path in fitslist1 ]
-    cdsnum2 = [ re.match(r"CDS(\d{2})", os.path.basename(fits_path)).group(1) for fits_path in fitslist2 ]
-    common = set(cdsnum1) & set(cdsnum2)
-    firstnum = common[0]
-    lastnum = common[-1]
-    fits_tuple1 = (fitslist1[cdsnum1.index(firstnum)], fitslist1[cdsnum1.index(lastnum)])
-    fits_tuple2 = (fitslist2[cdsnum2.index(firstnum)], fitslist2[cdsnum2.index(lastnum)])
-    return fits_tuple1, fits_tuple2
+def search_combination_with_diff_label(
+        label_dict: Dict[str, str],
+    ) -> List[Tuple[str, str]]:
+
+    results: List[Tuple[str, str]] = []
+
+    for no1, no2 in combinations(sorted(label_dict.keys()), 2):
+        # ラベルが同じならスキップ
+        if label_dict[no1] == label_dict[no2]:
+            continue
+        results.append((no1, no2))
+
+    return results
+
+
+
+def search_combination_for_set_AB(fitslist1: List[str], fitslist2: List[str]):
+    results: List[Tuple[str, str]] = []
+    cdsnum1_list = []
+    cdsnum2_list = []
+    for fits_path1 in fitslist1:
+        cdsnum1 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fits_path1)).group(1)
+        cdsnum1_list.append(cdsnum1)
+    for fits_path2 in fitslist2:
+        cdsnum2 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fits_path2)).group(1)
+        cdsnum2_list.append(cdsnum2)
+        
+    # Convert to integers for numeric comparison
+    nums1 = [int(x) for x in cdsnum1_list]
+    nums2 = [int(x) for x in cdsnum2_list]
+
+    # Find common CDS numbers
+    common = sorted(set(nums1) & set(nums2))
+    if len(common) < 2:
+        return None
+
+    cmin, cmax = common[0], common[-1]
+
+    # Find indices in original lists
+    idx1_min = nums1.index(cmin)
+    idx2_min = nums2.index(cmin)
+    idx1_max = nums1.index(cmax)
+    idx2_max = nums2.index(cmax)
+
+    return idx1_min, idx2_min, idx1_max, idx2_max
+
+
+def create_CDS_image(fitspath1: str, fitspath2: str):
+    cdsnum1 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fitspath1)).group(1)
+    cdsnum2 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fitspath2)).group(1)
+    new_fitspath = re.sub(r"CDS\d{2}\.fits", f"CDS{cdsnum1}-{cdsnum2}.fits", fitspath1)
+    header_fitspath = re.sub(r"\.CDS\d{2}\.fits", ".CDS30.fits", fitspath1)
+    fits1 = fits.getdata(fitspath1)
+    fits2 = fits.getdata(fitspath2)
+    header = fits.getheader(header_fitspath)
+    image = fits1 - fits2
+    fits.writeto(new_fitspath, image, header=header)
+    return new_fitspath
+
+
+def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
+    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-CDS(\d{2})\.fits", os.path.basename(fitspath1)).group(1)
+    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-CDS(\d{2})\.fits", os.path.basename(fitspath2)).group(1)
+    new_fitspath = re.sub(r"\d{4}\_CDS\d{2}-CDS\d{2}\.fits", f"{imagenum1}-{imagenum2}.fits", fitspath1)
+    fits1 = fits.getdata(fitspath1)
+    fits2 = fits.getdata(fitspath2)
+    header = fits.getheader(fitspath1)
+    image = fits1 - fits2
+    fits.writeto(new_fitspath, image, header=header)
+    return new_fitspath
 
 
 
@@ -228,6 +296,19 @@ def reduction_main():
     conn.close()
     for date_label, base_name_list in filepath_dict.items():
         do_scp_raw_fits(date_label, object_name, base_name_list)
-        raw_datalist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
-        quality_check(raw_datalist)
-        
+        raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
+        raw_fitslist = quality_check(raw_fitslist)
+        fitsdict = gen_fitsdict(raw_fitslist)
+        label_dict = classify_spec_location(fitsdict)
+        pair_label_list = search_combination_with_diff_label(label_dict)
+        for no1, no2 in pair_label_list:
+            fitslist1 = fitsdict[no1]
+            fitslist2 = fitsdict[no2]
+            fitslist1 = reject_saturation(fitslist1)
+            fitslist2 = reject_saturation(fitslist2)
+            fitslist1.sort()
+            fitslist2.sort()
+            idx1_min, idx2_min, idx1_max, idx2_max = search_combination_for_set_AB(fitslist1, fitslist2)
+            cds1_path = create_CDS_image(fitslist1[idx1_max], fitslist2[idx1_min])
+            cds2_path = create_CDS_image(fitslist1[idx2_max], fitslist2[idx2_min])
+            subtract_AB_image(cds1_path, cds2_path)

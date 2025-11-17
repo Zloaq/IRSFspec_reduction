@@ -45,11 +45,16 @@ QUALITY_HIST_RANGE=(55000, 65536), BINS=1000
 >- 引数 (fitslist)
 >- 各FITSの面積を計算し、エラー判定したファイルを除外して合格リストを返す。
 
+
+>**gen_fitsdict**
+>- ただ辞書に分類するだけ
+{Num:[fitslist]} で Num は 4桁埋め str
+
 >**classify_spec_location**
 >- 引数 (fitsdict{No:fitslist}) って感じかな。
 >- 中心 pix 同士の幅 >  典型的な像の広がり * 2 + buff  
 最も明るいやつだけでいいか？だって quality check 通ってるんだもんね？  
-でも誤検出で出ない可能性もあるかなあ。list にしとくかあ。  
+でも誤検で出ない可能性もあるかなあ。list にしとくかあ。  
 >- spec_locator 通したら mask が返ってきます。
 
 >**reject_saturation**
