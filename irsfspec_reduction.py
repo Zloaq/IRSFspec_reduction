@@ -357,11 +357,27 @@ def reduction_main():
         for no1, no2 in pair_label_list:
             fitslist1 = fitsdict[no1]
             fitslist2 = fitsdict[no2]
+
+            # 飽和フレームを除外
             fitslist1 = reject_saturation(fitslist1)
             fitslist2 = reject_saturation(fitslist2)
+
+            # 飽和除外の結果、どちらかが空になったらこのペアはスキップ
+            if not fitslist1 or not fitslist2:
+                logging.warning(f"No usable frames remain for pair (No {no1}, No {no2}) after saturation rejection; skipping.")
+                continue
+
             fitslist1.sort()
             fitslist2.sort()
-            idx1_min, idx2_min, idx1_max, idx2_max = search_combination_for_set_AB(fitslist1, fitslist2)
+
+            combo = search_combination_for_set_AB(fitslist1, fitslist2)
+            if combo is None:
+                # 共通の CDS 番号が 2 つ未満 → AB 画像を作れないのでスキップ
+                logging.warning(f"Not enough common CDS numbers between No {no1} and No {no2}; skipping.")
+                continue
+
+            idx1_min, idx2_min, idx1_max, idx2_max = combo
+
             cds1_path = create_CDS_image(fitslist1[idx1_max], fitslist2[idx1_min])
             cds2_path = create_CDS_image(fitslist1[idx2_max], fitslist2[idx2_min])
             subtract_AB_image(cds1_path, cds2_path)
