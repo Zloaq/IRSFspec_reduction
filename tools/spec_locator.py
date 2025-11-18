@@ -175,6 +175,7 @@ if __name__ == "__main__":
             fig, ax = plt.subplots()
             ax.imshow(image)
             plt.savefig(f"{WORK_DIR}/test{num:02d}_none.png")
+            plt.close(fig)
             num += 1
             continue
         else:
@@ -182,4 +183,5 @@ if __name__ == "__main__":
             fig, ax = plt.subplots()
             ax.imshow(mask)
             plt.savefig(f"{WORK_DIR}/test{num:02d}.png")
+            plt.close(fig)
             num += 1
