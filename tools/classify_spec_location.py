@@ -96,7 +96,7 @@ if __name__ == "__main__":
     RAWDATA_DIR = os.getenv("RAWDATA_DIR")
     DARK4LOCATE_DIR = os.getenv("DARK4LOCATE_DIR")
     WORK_DIR = os.getenv("WORK_DIR")
-    fitslist = glob.glob(f"{RAWDATA_DIR}/s-gem/220120/*-0091*.fits")
+    fitslist = glob.glob(f"{RAWDATA_DIR}/s-gem/220120/*-0094*.fits")
 
     def find_dark(fitsname, darkpath):
         fits_basename = Path(fitsname).name
