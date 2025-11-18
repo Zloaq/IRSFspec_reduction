@@ -174,12 +174,12 @@ if __name__ == "__main__":
             logging.warning(f"spec_locator failed for {os.path.basename(fits_path)}: skipping.")
             fig, ax = plt.subplots()
             ax.imshow(image)
-            plt.savefig(f"{WORK_DIR}/test{num}_none.png")
+            plt.savefig(f"{WORK_DIR}/test{num:02d}_none.png")
             num += 1
             continue
         else:
             # このファイルではスペクトルが見つかった
             fig, ax = plt.subplots()
             ax.imshow(mask)
-            plt.savefig(f"{WORK_DIR}/test{num}.png")
+            plt.savefig(f"{WORK_DIR}/test{num:02d}.png")
             num += 1
