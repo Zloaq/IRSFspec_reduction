@@ -122,6 +122,7 @@ if __name__ == "__main__":
     for fits_path in fitslist_sorted:
         header = fits.getheader(fits_path)
         data = fits.getdata(fits_path)
+        data = np.asarray(data, dtype=np.float64)
         dark = find_dark(fits_path, DARK4LOCATE_DIR)
         image = data - dark
         mask = spec_locator.spec_locator(image)
