@@ -9,7 +9,7 @@ from dataclasses import dataclass
 @dataclass(frozen=True)
 class SpecConfig:
     spec_spread_pix:int = 12
-    buffer_pix:int = 5
+    buffer_pix:int = 30
 
 
 
@@ -77,3 +77,64 @@ def classify_spec_location(centerdict: Dict[str, int], config: SpecConfig = Spec
         for k, _y in group:
             result[k] = lab
     return result
+
+
+if __name__ == "__main__":
+
+    import glob
+    import astropy.io.fits as fits
+    import re
+    import os
+    from pathlib import Path
+    from dotenv import load_dotenv
+    import spec_locator
+    import logging
+    import matplotlib.pyplot as plt
+
+
+    load_dotenv("../config.env")
+    RAWDATA_DIR = os.getenv("RAWDATA_DIR")
+    DARK4LOCATE_DIR = os.getenv("DARK4LOCATE_DIR")
+    WORK_DIR = os.getenv("WORK_DIR")
+    fitslist = glob.glob(f"{RAWDATA_DIR}/s-gem/220120/*-0091*.fits")
+
+    def find_dark(fitsname, darkpath):
+        fits_basename = Path(fitsname).name
+        m = re.search(r"(CDS\d{2})", fits_basename)
+        if not m:
+            raise ValueError(f"Could not extract CDS number from filename: {fits_basename}")
+        cds_num = m.group(1)
+
+        pattern = str(Path(darkpath) / f"*{cds_num}.fits")
+        matches = glob.glob(pattern)
+        if not matches:
+            raise FileNotFoundError(f"No dark frame found for {cds_num} in {darkpath}")
+
+        return fits.getdata(matches[0])
+
+
+    fitslist_sorted = sorted(fitslist, reverse=True)
+    print(RAWDATA_DIR)
+    print(fitslist_sorted)
+
+    center_y = None
+
+    for fits_path in fitslist_sorted:
+        header = fits.getheader(fits_path)
+        data = fits.getdata(fits_path)
+        dark = find_dark(fits_path, DARK4LOCATE_DIR)
+        image = data - dark
+        mask = spec_locator.spec_locator(image)
+        if mask is None:
+            # このファイルではスペクトルが見つからなかった → 次のファイルへ
+            logging.warning(f"spec_locator failed for {os.path.basename(fits_path)}: skipping.")
+            continue
+
+        # 最初に見つかった mask を採用してループを抜ける
+        center_y = vertical_center_from_mask(mask)
+        break
+    
+
+    fig, ax = plt.subplots()
+    ax.imshow(mask)
+    plt.savefig(f"{WORK_DIR}/test.png")

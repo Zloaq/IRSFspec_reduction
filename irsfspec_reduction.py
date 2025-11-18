@@ -219,18 +219,19 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
             mask = spec_locator.spec_locator(image)
             if mask is None:
                 # このファイルではスペクトルが見つからなかった → 次のファイルへ
+                logging.warning(f"spec_locator failed for {os.path.basename(fits_path)}: skipping.")
                 continue
-
             # 最初に見つかった mask を採用してループを抜ける
             center_y = csl.vertical_center_from_mask(mask)
             break
 
-        if center_y is None:
+        if mask is None:
             # その番号の全ファイルで mask が見つからなかった → スキップ
             logging.warning(f"spec_locator failed for all files of No {number}; skipping.")
             continue
-
+        
         centers[number] = center_y
+        logging.info(f"No {number}: {center_y} in {os.path.basename(fits_path)}")
 
     if not centers:
         raise RuntimeError("No valid spectrum location found in any file.")
@@ -252,8 +253,8 @@ def reject_saturation(fitslist: List[str]):
         # スペクトル領域の画素値を取り出す
         spec_values = data[mask]
 
-        # SATURATION_LEVEL 以上の値が 1 つでもあれば「飽和している」とみなして除外
-        if np.any(spec_values >= SATURATION_LEVEL):
+        # SATURATION_LEVEL 以下の値が 1 つでもあれば「飽和している」とみなして除外
+        if np.any(spec_values <= SATURATION_LEVEL):
             logging.warning(f"Saturated frame rejected: {os.path.basename(fits_path)}")
             continue
 
@@ -311,28 +312,42 @@ def search_combination_for_set_AB(fitslist1: List[str], fitslist2: List[str]):
     return idx1_min, idx2_min, idx1_max, idx2_max
 
 
-def create_CDS_image(fitspath1: str, fitspath2: str):
+def create_CDS_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
     cdsnum1 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fitspath1)).group(1)
     cdsnum2 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fitspath2)).group(1)
-    new_fitspath = re.sub(r"CDS\d{2}\.fits", f"CDS{cdsnum1}-{cdsnum2}.fits", fitspath1)
-    header_fitspath = re.sub(r"\.CDS\d{2}\.fits", ".CDS30.fits", fitspath1)
+
+    # 元のパスの basename だけを使って新しいファイル名を作る
+    basename = os.path.basename(fitspath1)
+    new_basename = re.sub(r"CDS\d{2}\.fits", f"CDS{cdsnum1}-{cdsnum2}.fits", basename)
+    new_fitspath = os.path.join(savepath, new_basename)
+
+    # ヘッダは同じディレクトリ内の CDS30 から取る想定
+    header_fitspath = re.sub(r"_CDS\d{2}\.fits", "_CDS30.fits", fitspath1)
+
     fits1 = fits.getdata(fitspath1)
     fits2 = fits.getdata(fitspath2)
     header = fits.getheader(header_fitspath)
     image = fits1 - fits2
-    fits.writeto(new_fitspath, image, header=header)
+    fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
 
 
 def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
-    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-CDS(\d{2})\.fits", os.path.basename(fitspath1)).group(1)
-    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-CDS(\d{2})\.fits", os.path.basename(fitspath2)).group(1)
-    new_fitspath = re.sub(r"\d{4}\_CDS\d{2}-CDS\d{2}\.fits", f"{imagenum1}-{imagenum2}.fits", fitspath1)
+    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", os.path.basename(fitspath1)).group(1)
+    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", os.path.basename(fitspath2)).group(1)
+
+    # 元のパスの basename から AB 減算後のファイル名を作る
+    basename = os.path.basename(fitspath1)
+    new_basename = re.sub(r"\d{4}_CDS\d{2}-\d{2}\.fits", f"{imagenum1}-{imagenum2}.fits", basename)
+    new_fitspath = os.path.join(savepath, new_basename)
+
     fits1 = fits.getdata(fitspath1)
     fits2 = fits.getdata(fitspath2)
     header = fits.getheader(fitspath1)
     image = fits1 - fits2
-    fits.writeto(new_fitspath, image, header=header)
+    header["IMAGE_A"] = os.path.basename(fitspath1)
+    header["IMAGE_B"] = os.path.basename(fitspath2)
+    fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
 
 
@@ -378,12 +393,16 @@ def reduction_main():
 
             idx1_min, idx2_min, idx1_max, idx2_max = combo
 
-            cds1_path = create_CDS_image(fitslist1[idx1_max], fitslist2[idx1_min])
-            cds2_path = create_CDS_image(fitslist1[idx2_max], fitslist2[idx2_min])
+            cds1_path = create_CDS_image(fitslist1[idx1_min], fitslist1[idx1_max])
+            cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max])
             subtract_AB_image(cds1_path, cds2_path)
 
 
 if __name__ == "__main__":
+    logging.basicConfig(
+        level=logging.INFO,
+        format="%(asctime)s [%(levelname)s] %(message)s"
+    )
     if len(sys.argv) != 2 and len(sys.argv) != 3:
         print("Usage: python irsfspec_reduction.py [object_name] [date_label]")
         sys.exit(1)
