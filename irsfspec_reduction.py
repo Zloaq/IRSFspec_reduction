@@ -56,7 +56,7 @@ def find_dark(fitsname, darkpath):
     if not matches:
         raise FileNotFoundError(f"No dark frame found for {cds_num} in {darkpath}")
 
-    return fits.getdata(matches[0])
+    return matches[0]
 
 
 def db_search(conn: sqlite3.Connection, object_name, date_label=None) -> Dict[str, List[str]]:
@@ -183,7 +183,8 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
         fitslist.sort()
         for fits_path in fitslist[::-1]:
             header, data = _load_fits(fits_path)
-            dark = find_dark(fits_path, DARK4LOCATE_DIR)
+            darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
+            _, dark = _load_fits(darkpath)
             image = data - dark
             mask = spec_locator.spec_locator(image)
             if mask is None:
@@ -214,7 +215,8 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
 
         for fits_path in fitslist_sorted:
             header, data = _load_fits(fits_path)
-            dark = find_dark(fits_path, DARK4LOCATE_DIR)
+            darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
+            _, dark = _load_fits(darkpath)
             image = data - dark
             mask = spec_locator.spec_locator(image)
             if mask is None:
@@ -324,9 +326,8 @@ def create_CDS_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
     # ヘッダは同じディレクトリ内の CDS30 から取る想定
     header_fitspath = re.sub(r"_CDS\d{2}\.fits", "_CDS30.fits", fitspath1)
 
-    fits1 = fits.getdata(fitspath1)
-    fits2 = fits.getdata(fitspath2)
-    header = fits.getheader(header_fitspath)
+    header, fits1 = _load_fits(fitspath1)
+    _, fits2 = _load_fits(fitspath2)
     image = fits1 - fits2
     fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
@@ -341,9 +342,8 @@ def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
     new_basename = re.sub(r"\d{4}_CDS\d{2}-\d{2}\.fits", f"{imagenum1}-{imagenum2}.fits", basename)
     new_fitspath = os.path.join(savepath, new_basename)
 
-    fits1 = fits.getdata(fitspath1)
-    fits2 = fits.getdata(fitspath2)
-    header = fits.getheader(fitspath1)
+    header, fits1 = _load_fits(fitspath1)
+    _, fits2 = _load_fits(fitspath2)
     image = fits1 - fits2
     header["IMAGE_A"] = os.path.basename(fitspath1)
     header["IMAGE_B"] = os.path.basename(fitspath2)

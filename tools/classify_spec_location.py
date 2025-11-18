@@ -76,6 +76,9 @@ def classify_spec_location(centerdict: Dict[str, int], config: SpecConfig = Spec
         lab = idx_to_label(gi)
         for k, _y in group:
             result[k] = lab
+            
+    print(centerdict)
+    print(result)
     return result
 
 
