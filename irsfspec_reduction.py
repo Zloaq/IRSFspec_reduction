@@ -31,6 +31,14 @@ BINS = 1000
 SATURATION_LEVEL = 18000
 
 
+# 出力ディレクトリを作成・返すヘルパー
+def get_output_dir(object_name: str, date_label: str) -> Path:
+    """WORK_DIR/object_name/date_label に対応する出力ディレクトリを返す。"""
+    d = Path(WORK_DIR) / object_name / date_label
+    d.mkdir(parents=True, exist_ok=True)
+    return d
+
+
 
 def _load_fits(fits_path: str) -> Tuple[fits.Header, np.ndarray]:
     if not os.path.exists(fits_path):
@@ -369,17 +377,14 @@ def search_combination_for_set_AB(fitslist1: List[str], fitslist2: List[str]):
     return idx1_min, idx2_min, idx1_max, idx2_max
 
 
-def create_CDS_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
-    cdsnum1 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fitspath1)).group(1)
-    cdsnum2 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fitspath2)).group(1)
+def create_CDS_image(fitspath1: str, fitspath2: str, savepath: Path):
+    cdsnum1 = re.match(r"spec\d{6}-(\d{4})_CDS(\d{2})\.fits", Path(fitspath1).name).group(2)
+    cdsnum2 = re.match(r"spec\d{6}-(\d{4})_CDS(\d{2})\.fits", Path(fitspath2).name).group(2)
 
     # 元のパスの basename だけを使って新しいファイル名を作る
-    basename = os.path.basename(fitspath1)
+    basename = Path(fitspath1).name
     new_basename = re.sub(r"CDS\d{2}\.fits", f"CDS{cdsnum1}-{cdsnum2}.fits", basename)
-    new_fitspath = os.path.join(savepath, new_basename)
-
-    # ヘッダは同じディレクトリ内の CDS30 から取る想定
-    header_fitspath = re.sub(r"_CDS\d{2}\.fits", "_CDS30.fits", fitspath1)
+    new_fitspath = Path(savepath) / new_basename
 
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
@@ -388,69 +393,61 @@ def create_CDS_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
     return new_fitspath
 
 
-def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: str = WORK_DIR):
-    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", os.path.basename(fitspath1)).group(1)
-    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", os.path.basename(fitspath2)).group(1)
+def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: Path):
+    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", Path(fitspath1).name).group(1)
+    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", Path(fitspath2).name).group(1)
 
     # 元のパスの basename から AB 減算後のファイル名を作る
-    basename = os.path.basename(fitspath1)
+    basename = Path(fitspath1).name
     new_basename = re.sub(r"\d{4}_CDS\d{2}-\d{2}\.fits", f"{imagenum1}-{imagenum2}.fits", basename)
-    new_fitspath = os.path.join(savepath, new_basename)
+    new_fitspath = Path(savepath) / new_basename
 
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
     image = fits1 - fits2
-    header["IMAGE_A"] = os.path.basename(fitspath1)
-    header["IMAGE_B"] = os.path.basename(fitspath2)
+    header["IMAGE_A"] = Path(fitspath1).name
+    header["IMAGE_B"] = Path(fitspath2).name
     fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
 
 
 
-def reduction_main():
-    if len(sys.argv) == 3:
-        object_name = sys.argv[1]
-        date_label = sys.argv[2]
-    elif len(sys.argv) == 2:
-        object_name = sys.argv[1]
-        date_label = None
-    conn = sqlite3.connect(DB_PATH)
-    filepath_dict = db_search(conn, object_name, date_label)
-    conn.close()
-    for date_label, base_name_list in filepath_dict.items():
-        do_scp_raw_fits(date_label, object_name, base_name_list)
-        raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
-        raw_fitslist = quality_check(raw_fitslist)
-        fitsdict = gen_fitsdict(raw_fitslist)
-        label_dict = classify_spec_location(fitsdict)
-        pair_label_list = search_combination_with_diff_label(label_dict)
-        for no1, no2 in pair_label_list:
-            fitslist1 = fitsdict[no1]
-            fitslist2 = fitsdict[no2]
+def reduction_main(object_name: str, date_label: str, base_name_list: List[str]):
+    outdir = get_output_dir(object_name, date_label)
 
-            # 飽和フレームを除外
-            fitslist1 = reject_saturation(fitslist1)
-            fitslist2 = reject_saturation(fitslist2)
+    do_scp_raw_fits(date_label, object_name, base_name_list)
+    raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
+    raw_fitslist = quality_check(raw_fitslist)
+    fitsdict = gen_fitsdict(raw_fitslist)
+    label_dict = classify_spec_location(fitsdict)
+    pair_label_list = search_combination_with_diff_label(label_dict)
+    for no1, no2 in pair_label_list:
+        fitslist1 = fitsdict[no1]
+        fitslist2 = fitsdict[no2]
 
-            # 飽和除外の結果、どちらかが空になったらこのペアはスキップ
-            if not fitslist1 or not fitslist2:
-                logging.warning(f"No usable frames remain for pair (No {no1}, No {no2}) after saturation rejection; skipping.")
-                continue
+        # 飽和フレームを除外
+        fitslist1 = reject_saturation(fitslist1)
+        fitslist2 = reject_saturation(fitslist2)
 
-            fitslist1.sort()
-            fitslist2.sort()
+        # 飽和除外の結果、どちらかが空になったらこのペアはスキップ
+        if not fitslist1 or not fitslist2:
+            logging.warning(f"No usable frames remain for pair (No {no1}, No {no2}) after saturation rejection; skipping.")
+            continue
 
-            combo = search_combination_for_set_AB(fitslist1, fitslist2)
-            if combo is None:
-                # 共通の CDS 番号が 2 つ未満 → AB 画像を作れないのでスキップ
-                logging.warning(f"Not enough common CDS numbers between No {no1} and No {no2}; skipping.")
-                continue
+        fitslist1.sort()
+        fitslist2.sort()
 
-            idx1_min, idx2_min, idx1_max, idx2_max = combo
+        combo = search_combination_for_set_AB(fitslist1, fitslist2)
+        if combo is None:
+            # 共通の CDS 番号が 2 つ未満 → AB 画像を作れないのでスキップ
+            logging.warning(f"Not enough common CDS numbers between No {no1} and No {no2}; skipping.")
+            continue
 
-            cds1_path = create_CDS_image(fitslist1[idx1_min], fitslist1[idx1_max])
-            cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max])
-            subtract_AB_image(cds1_path, cds2_path)
+        idx1_min, idx2_min, idx1_max, idx2_max = combo
+
+        cds1_path = create_CDS_image(fitslist1[idx1_min], fitslist1[idx1_max], outdir)
+        cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max], outdir)
+        subtract_AB_image(cds1_path, cds2_path, outdir)
 
 
 if __name__ == "__main__":
@@ -461,4 +458,16 @@ if __name__ == "__main__":
     if len(sys.argv) != 2 and len(sys.argv) != 3:
         print("Usage: python irsfspec_reduction.py [object_name] [date_label]")
         sys.exit(1)
-    reduction_main()
+        
+    if len(sys.argv) == 3:
+        object_name = sys.argv[1]
+        date_label = sys.argv[2]
+    elif len(sys.argv) == 2:
+        object_name = sys.argv[1]
+        date_label = None
+    conn = sqlite3.connect(DB_PATH)
+    filepath_dict = db_search(conn, object_name, date_label)
+    conn.close()
+    
+    for date_label, base_name_list in filepath_dict.items():
+        reduction_main(object_name, date_label, base_name_list)
