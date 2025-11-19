@@ -430,6 +430,13 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         n_before_quality,
         len(raw_fitslist),
     )
+    if not raw_fitslist:
+        logging.warning(
+            "No usable raw FITS files for object=%s, date_label=%s after quality check; skipping.",
+            object_name,
+            date_label,
+        )
+        return
 
     fitsdict = gen_fitsdict(raw_fitslist)
     logging.info("Number of Num1 groups after quality check: %d", len(fitsdict))
