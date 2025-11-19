@@ -6,7 +6,7 @@ import glob
 import numpy as np
 import matplotlib.pyplot as plt
 from astropy.io import fits
-from scipy.ndimage import label
+from scipy.ndimage import label, binary_fill_holes
 from pathlib import Path
 from dataclasses import dataclass
 
@@ -85,6 +85,66 @@ def data_mask(data, sky_noise_data, threshold=1.0):
     return data <= thr
 
 
+
+def find_box(data, sky_noise_data, threshold=1, cfg: DeviceConfig = DEFAULT_CONFIG):
+
+    mask = data_mask(data, sky_noise_data, threshold)
+    labeled, num_features = label(mask.astype(np.uint8))
+    if num_features == 0:
+        return np.zeros_like(mask, dtype=bool)
+
+    areas = np.bincount(labeled.ravel())[1:]
+    valid_labels = np.where(areas >= cfg.min_area)[0] + 1  # ラベル番号は1始まり
+
+    pass_labels = []
+    x_widths = []
+    y_centers = []
+    for label_id in valid_labels:
+        coords = np.argwhere(labeled == label_id)
+        x_coords = coords[:, 1]
+        y_coords = coords[:, 0]
+        x_span = x_coords.max() - x_coords.min() + 1
+        y_span = y_coords.max() - y_coords.min() + 1
+        y_center = y_coords.mean()
+
+        region = (labeled == label_id)
+        filled = binary_fill_holes(region)
+        holes_mask = filled & ~region
+        _, num_holes = label(holes_mask)
+
+        if num_holes > cfg.max_holes:
+            continue
+
+        # 形状フィルタ
+        if not (y_span > cfg.y_span_gt and y_span < cfg.y_span_lt and x_span > cfg.x_span_gt):
+            continue
+
+        print(f"y_center: {y_center}")
+        print(f"y_span_gt: {y_span > cfg.y_span_gt} y_span_lt: {y_span < cfg.y_span_lt} x_span_gt: {x_span > cfg.x_span_gt}")
+        if y_span > cfg.y_span_gt and y_span < cfg.y_span_lt and x_span > cfg.x_span_gt:
+            pass_labels.append(label_id)
+            x_widths.append(x_span)
+            y_centers.append(y_center)
+    
+    """
+    while y_centers:
+        y_diff_max = max(y_centers) - min(y_centers)
+        if y_diff_max > cfg.y_sep_lt:
+            max_idx = x_widths.index(max(x_widths))
+            del pass_labels[max_idx]
+            del x_widths[max_idx]
+            del y_centers[max_idx]
+        else:
+            break
+    """
+    
+    final_labels = np.array(pass_labels)
+
+    combined_mask = np.isin(labeled, final_labels)
+    return combined_mask
+
+
+"""
 def find_box(data, sky_noise_data, threshold=1, cfg: DeviceConfig = DEFAULT_CONFIG):
 
     mask = data_mask(data, sky_noise_data, threshold)
@@ -107,7 +167,7 @@ def find_box(data, sky_noise_data, threshold=1, cfg: DeviceConfig = DEFAULT_CONF
 
     combined_mask = np.isin(labeled, final_labels)
     return combined_mask
-
+"""
 
 
 def spec_locator(data, cfg: DeviceConfig = DEFAULT_CONFIG):
@@ -167,6 +227,7 @@ if __name__ == "__main__":
         data = fits.getdata(fits_path)
         data = np.asarray(data, dtype=np.float64)
         dark = find_dark(fits_path, DARK4LOCATE_DIR)
+        dark = np.asarray(dark, dtype=np.float64)
         image = data - dark
         mask = spec_locator(image)
         if mask is None:
