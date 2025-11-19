@@ -293,17 +293,16 @@ def reject_saturation(fitslist: List[str]):
     pass_fitslist: List[str] = []
     saturated_list: List[str] = []
     no_spec_list: List[str] = []
+    per_file_logs: List[str] = []
 
     for fits_path in fitslist:
         header, data = _load_fits(fits_path)
         mask = spec_locator.spec_locator(data)
         if mask is None:
-            # スペクトル位置が特定できないフレームは使わない
-            logging.warning(
-                "reject_saturation: spec not found in %s, skipping.",
-                os.path.basename(fits_path),
-            )
+            # スペクトル位置が特定できないフレームもゆるそう
             no_spec_list.append(fits_path)
+            pass_fitslist.append(fits_path)
+            per_file_logs.append(f"{os.path.basename(fits_path)}, NO_SPEC")
             continue
 
         # スペクトル領域の画素値を取り出す
@@ -311,38 +310,24 @@ def reject_saturation(fitslist: List[str]):
 
         # SATURATION_LEVEL 以下の値が 1 つでもあれば「飽和している」とみなして除外
         if np.any(spec_values <= SATURATION_LEVEL):
-            logging.warning(
-                "reject_saturation: saturated frame rejected: %s",
-                os.path.basename(fits_path),
-            )
             saturated_list.append(fits_path)
+            per_file_logs.append(f"{os.path.basename(fits_path)}, SATURATED")
             continue
 
-        # ここまで来たら飽和していないので採用
+        # spec があって、飽和していないので採用
         pass_fitslist.append(fits_path)
+        per_file_logs.append(f"{os.path.basename(fits_path)}, OK")
 
-    # サマリーをログに出す
-    logging.info(
-        "reject_saturation summary: total=%d, pass=%d, saturated=%d, no_spec=%d",
-        len(fitslist),
-        len(pass_fitslist),
-        len(saturated_list),
-        len(no_spec_list),
-    )
-    if saturated_list:
-        logging.info(
-            "reject_saturation saturated files: %s",
-            ", ".join(os.path.basename(p) for p in saturated_list),
-        )
-    if no_spec_list:
-        logging.info(
-            "reject_saturation spec-not-found files: %s",
-            ", ".join(os.path.basename(p) for p in no_spec_list),
-        )
     # Append summary to SATURATION_LOG_PATH if set
     if SATURATION_LOG_PATH is not None:
         with open(SATURATION_LOG_PATH, "a") as f:
-            f.write(f"reject_saturation summary: total={len(fitslist)}, pass={len(pass_fitslist)}, saturated={len(saturated_list)}, no_spec={len(no_spec_list)}\n")
+            for line in per_file_logs:
+                f.write(line + "\n")
+            f.write(
+                f"reject_saturation summary: total={len(fitslist)}, "
+                f"pass={len(pass_fitslist)}, saturated={len(saturated_list)}, "
+                f"no_spec={len(no_spec_list)}\n"
+            )
             if saturated_list:
                 f.write("saturated files: " + ", ".join(os.path.basename(p) for p in saturated_list) + "\n")
             if no_spec_list:
