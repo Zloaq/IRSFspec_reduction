@@ -27,8 +27,10 @@ class DeviceConfig:
 
     # find_box geometry filters
     min_area: int = 200
+    y_span_gt: int = 2    # keep condition: y_span > 2
     y_span_lt: int = 25   # keep condition: y_span < 25
     x_span_gt: int = 25   # keep condition: x_span > 25
+    max_holes: int = 1
 
     # thresholds for spec_locator loop
     thresholds: tuple = tuple(np.arange(4.0, 0.99, -0.5))
