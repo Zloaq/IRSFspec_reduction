@@ -328,10 +328,6 @@ def reject_saturation(fitslist: List[str]):
                 f"pass={len(pass_fitslist)}, saturated={len(saturated_list)}, "
                 f"no_spec={len(no_spec_list)}\n"
             )
-            if saturated_list:
-                f.write("saturated files: " + ", ".join(os.path.basename(p) for p in saturated_list) + "\n")
-            if no_spec_list:
-                f.write("spec-not-found files: " + ", ".join(os.path.basename(p) for p in no_spec_list) + "\n")
 
     return pass_fitslist
 
