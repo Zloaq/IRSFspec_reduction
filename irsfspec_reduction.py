@@ -414,7 +414,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     QUALITY_LOG_PATH = outdir / "quality_check.log"
     SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
-    logging.info("=== Start reduction: object=%s, date_label=%s ===", object_name, date_label)
+    logging.info("==== Start reduction: object=%s, date_label=%s ====", object_name, date_label)
     logging.info("Output directory: %s", outdir)
 
     do_scp_raw_fits(date_label, object_name, base_name_list)
@@ -441,7 +441,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     logging.info("Found %d AB pairs with different labels.", len(pair_label_list))
 
     for no1, no2 in pair_label_list:
-        logging.info("Processing pair: No %s (group1) and No %s (group2)", no1, no2)
+        logging.info("== Processing pair: No %s (group1) and No %s (group2)", no1, no2)
         fitslist1 = fitsdict[no1]
         fitslist2 = fitsdict[no2]
 
@@ -483,16 +483,15 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         logging.info(
             "Using CDS indices: No %s -> (%d, %d), No %s -> (%d, %d)",
             no1,
-            idx1_min,
-            idx1_max,
+            idx1_min + 1,
+            idx1_max + 1,
             no2,
-            idx2_min,
-            idx2_max,
+            idx2_min + 1,
+            idx2_max + 1,
         )
 
         cds1_path = create_CDS_image(fitslist1[idx1_min], fitslist1[idx1_max], outdir)
         cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max], outdir)
-        logging.info("Created CDS images: %s, %s", cds1_path.name, cds2_path.name)
 
         ab_path = subtract_AB_image(cds1_path, cds2_path, outdir)
         logging.info("Created AB-subtracted image: %s", ab_path.name)
