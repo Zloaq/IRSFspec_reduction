@@ -30,6 +30,10 @@ QUALITY_HIST_RANGE = (55000, 65536)
 BINS = 1000
 SATURATION_LEVEL = 18000
 
+# Global log file paths for quality and saturation checks
+QUALITY_LOG_PATH = None
+SATURATION_LOG_PATH = None
+
 
 # 出力ディレクトリを作成・返すヘルパー
 def get_output_dir(object_name: str, date_label: str) -> Path:
@@ -186,6 +190,12 @@ def quality_check(fitslist: List[str]):
             "quality_check failed files: %s",
             ", ".join(os.path.basename(p) for p in fail_list),
         )
+    # Append summary to QUALITY_LOG_PATH if set
+    if QUALITY_LOG_PATH is not None:
+        with open(QUALITY_LOG_PATH, "a") as f:
+            f.write(f"quality_check summary: total={len(fitslist)}, pass={len(pass_list)}, fail={len(fail_list)}\n")
+            if fail_list:
+                f.write("failed files: " + ", ".join(os.path.basename(p) for p in fail_list) + "\n")
 
     return pass_list
 
@@ -325,6 +335,14 @@ def reject_saturation(fitslist: List[str]):
             "reject_saturation spec-not-found files: %s",
             ", ".join(os.path.basename(p) for p in no_spec_list),
         )
+    # Append summary to SATURATION_LOG_PATH if set
+    if SATURATION_LOG_PATH is not None:
+        with open(SATURATION_LOG_PATH, "a") as f:
+            f.write(f"reject_saturation summary: total={len(fitslist)}, pass={len(pass_fitslist)}, saturated={len(saturated_list)}, no_spec={len(no_spec_list)}\n")
+            if saturated_list:
+                f.write("saturated files: " + ", ".join(os.path.basename(p) for p in saturated_list) + "\n")
+            if no_spec_list:
+                f.write("spec-not-found files: " + ", ".join(os.path.basename(p) for p in no_spec_list) + "\n")
 
     return pass_fitslist
 
@@ -414,6 +432,11 @@ def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: Path):
 
 def reduction_main(object_name: str, date_label: str, base_name_list: List[str]):
     outdir = get_output_dir(object_name, date_label)
+
+    # Set global log file paths for this reduction
+    global QUALITY_LOG_PATH, SATURATION_LOG_PATH
+    QUALITY_LOG_PATH = outdir / "quality_check.log"
+    SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
     do_scp_raw_fits(date_label, object_name, base_name_list)
     raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
