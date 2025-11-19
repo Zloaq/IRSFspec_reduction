@@ -119,8 +119,8 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
         os.makedirs(dst, exist_ok=True)
         cmd = ["scp", src, dst]
 
-        logging.info(f"COPY: {src}")
-        subprocess.run(cmd, check=True)
+        #logging.info(f"COPY: {src}")
+        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,)
 
 
 def compute_hist(data: np.ndarray, bins: int = BINS, rng=QUALITY_HIST_RANGE):
@@ -181,13 +181,6 @@ def quality_check(fitslist: List[str]):
         pass_list.append(fits_path)
         per_file_logs.append(f"{os.path.basename(fits_path)}, OK, area={area:.6f}")
 
-    # サマリーをログに出す
-    logging.info(
-        "quality_check summary: total=%d, pass=%d, fail=%d",
-        len(fitslist),
-        len(pass_list),
-        len(fail_list),
-    )
     if fail_list:
         logging.info(
             "quality_check failed files: %s",
@@ -266,7 +259,6 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
             mask = spec_locator.spec_locator(image)
             if mask is None:
                 # このファイルではスペクトルが見つからなかった → 次のファイルへ
-                logging.warning(f"spec_locator failed for {os.path.basename(fits_path)}: skipping.")
                 continue
             # 最初に見つかった mask を採用してループを抜ける
             center_y = csl.vertical_center_from_mask(mask)
@@ -278,7 +270,6 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
             continue
         
         centers[number] = center_y
-        logging.info(f"No {number}: {center_y} in {os.path.basename(fits_path)}")
 
     if not centers:
         raise RuntimeError("No valid spectrum location found in any file.")
@@ -423,14 +414,34 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     QUALITY_LOG_PATH = outdir / "quality_check.log"
     SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
+    logging.info("=== Start reduction: object=%s, date_label=%s ===", object_name, date_label)
+    logging.info("Output directory: %s", outdir)
+
     do_scp_raw_fits(date_label, object_name, base_name_list)
     raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")
-    raw_fitslist.sort()   
+    raw_fitslist.sort()
+
+    logging.info("Found %d raw FITS files before quality check.", len(raw_fitslist))
+
+    n_before_quality = len(raw_fitslist)
     raw_fitslist = quality_check(raw_fitslist)
+    logging.info(
+        "Quality check result: %d -> %d files",
+        n_before_quality,
+        len(raw_fitslist),
+    )
+
     fitsdict = gen_fitsdict(raw_fitslist)
+    logging.info("Number of Num1 groups after quality check: %d", len(fitsdict))
+
     label_dict = classify_spec_location(fitsdict)
+    logging.info("Classified spectrum locations for %d groups.", len(label_dict))
+
     pair_label_list = search_combination_with_diff_label(label_dict)
+    logging.info("Found %d AB pairs with different labels.", len(pair_label_list))
+
     for no1, no2 in pair_label_list:
+        logging.info("Processing pair: No %s (group1) and No %s (group2)", no1, no2)
         fitslist1 = fitsdict[no1]
         fitslist2 = fitsdict[no2]
 
@@ -438,9 +449,21 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         fitslist1 = reject_saturation(fitslist1)
         fitslist2 = reject_saturation(fitslist2)
 
+        logging.info(
+            "After saturation rejection: No %s -> %d frames, No %s -> %d frames",
+            no1,
+            len(fitslist1),
+            no2,
+            len(fitslist2),
+        )
+
         # 飽和除外の結果、どちらかが空になったらこのペアはスキップ
         if not fitslist1 or not fitslist2:
-            logging.warning(f"No usable frames remain for pair (No {no1}, No {no2}) after saturation rejection; skipping.")
+            logging.warning(
+                "No usable frames remain for pair (No %s, No %s) after saturation rejection; skipping.",
+                no1,
+                no2,
+            )
             continue
 
         fitslist1.sort()
@@ -449,14 +472,32 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         combo = search_combination_for_set_AB(fitslist1, fitslist2)
         if combo is None:
             # 共通の CDS 番号が 2 つ未満 → AB 画像を作れないのでスキップ
-            logging.warning(f"Not enough common CDS numbers between No {no1} and No {no2}; skipping.")
+            logging.warning(
+                "Not enough common CDS numbers between No %s and No %s; skipping.",
+                no1,
+                no2,
+            )
             continue
 
         idx1_min, idx2_min, idx1_max, idx2_max = combo
+        logging.info(
+            "Using CDS indices: No %s -> (%d, %d), No %s -> (%d, %d)",
+            no1,
+            idx1_min,
+            idx1_max,
+            no2,
+            idx2_min,
+            idx2_max,
+        )
 
         cds1_path = create_CDS_image(fitslist1[idx1_min], fitslist1[idx1_max], outdir)
         cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max], outdir)
-        subtract_AB_image(cds1_path, cds2_path, outdir)
+        logging.info("Created CDS images: %s, %s", cds1_path, cds2_path)
+
+        ab_path = subtract_AB_image(cds1_path, cds2_path, outdir)
+        logging.info("Created AB-subtracted image: %s", ab_path)
+
+    logging.info("=== End reduction: object=%s, date_label=%s ===", object_name, date_label)
 
 
 if __name__ == "__main__":
