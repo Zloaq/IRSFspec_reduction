@@ -40,7 +40,7 @@ def _load_fits(fits_path: str) -> Tuple[fits.Header, np.ndarray]:
         data = hdul[0].data
     if data is None:
         raise ValueError(f"No data in primary HDU: {fits_path}")
-    data = np.asarray(data, dtype=np.float64)
+    data = np.asarray(data, dtype=np.float32)
     return header, data
 
 
