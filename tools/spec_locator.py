@@ -121,8 +121,8 @@ def find_box(data, sky_noise_data, threshold=1, cfg: DeviceConfig = DEFAULT_CONF
         if not (y_span > cfg.y_span_gt and y_span < cfg.y_span_lt and x_span > cfg.x_span_gt):
             continue
 
-        print(f"y_center: {y_center}")
-        print(f"y_span_gt: {y_span > cfg.y_span_gt} y_span_lt: {y_span < cfg.y_span_lt} x_span_gt: {x_span > cfg.x_span_gt}")
+        #print(f"y_center: {y_center}")
+        #print(f"y_span_gt: {y_span > cfg.y_span_gt} y_span_lt: {y_span < cfg.y_span_lt} x_span_gt: {x_span > cfg.x_span_gt}")
         if y_span > cfg.y_span_gt and y_span < cfg.y_span_lt and x_span > cfg.x_span_gt:
             pass_labels.append(label_id)
             x_widths.append(x_span)
@@ -187,64 +187,3 @@ def spec_locator(data, cfg: DeviceConfig = DEFAULT_CONFIG):
     return combined_mask
 
 
-if __name__ == "__main__":
-
-    import glob
-    import astropy.io.fits as fits
-    import re
-    import os
-    import logging
-    from pathlib import Path
-    from dotenv import load_dotenv
-
-    load_dotenv(f"../config.env")
-    RAWDATA_DIR = os.getenv("RAWDATA_DIR")
-    DARK4LOCATE_DIR = os.getenv("DARK4LOCATE_DIR")
-    WORK_DIR = os.getenv("WORK_DIR")
-    fitslist = glob.glob(f"{RAWDATA_DIR}/s-gem/220120/*-0100*.fits")
-
-    fitslist_sorted = sorted(fitslist, reverse=True)
-    print(RAWDATA_DIR)
-    print(fitslist_sorted)
-
-    def find_dark(fitsname, darkpath):
-        fits_basename = Path(fitsname).name
-        m = re.search(r"(CDS\d{2})", fits_basename)
-        if not m:
-            raise ValueError(f"Could not extract CDS number from filename: {fits_basename}")
-        cds_num = m.group(1)
-
-        pattern = str(Path(darkpath) / f"*{cds_num}.fits")
-        matches = glob.glob(pattern)
-        if not matches:
-            raise FileNotFoundError(f"No dark frame found for {cds_num} in {darkpath}")
-
-        return fits.getdata(matches[0])
-
-    center_y = None
-    num = 0
-
-    for fits_path in fitslist_sorted:
-        header = fits.getheader(fits_path)
-        data = fits.getdata(fits_path)
-        data = np.asarray(data, dtype=np.float64)
-        dark = find_dark(fits_path, DARK4LOCATE_DIR)
-        dark = np.asarray(dark, dtype=np.float64)
-        image = data - dark
-        mask = spec_locator(image)
-        if mask is None:
-            # このファイルではスペクトルが見つからなかった → 次のファイルへ
-            logging.warning(f"spec_locator failed for {os.path.basename(fits_path)}: skipping.")
-            fig, ax = plt.subplots()
-            ax.imshow(image)
-            plt.savefig(f"{WORK_DIR}/test{num:02d}_none.png")
-            plt.close(fig)
-            num += 1
-            continue
-        else:
-            # このファイルではスペクトルが見つかった
-            fig, ax = plt.subplots()
-            ax.imshow(mask)
-            plt.savefig(f"{WORK_DIR}/test{num:02d}.png")
-            plt.close(fig)
-            num += 1

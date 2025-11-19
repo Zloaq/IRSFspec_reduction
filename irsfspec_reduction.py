@@ -148,14 +148,37 @@ def compute_area(data, bins: int = BINS, rng=QUALITY_HIST_RANGE, log_hist: bool 
 
 
 def quality_check(fitslist: List[str]):
-    pass_list = []
+    """品質チェックの結果をログにまとめて出力し、通過したファイルのみ返す。"""
+    pass_list: List[str] = []
+    fail_list: List[str] = []
+
     for fits_path in fitslist:
         header, data = _load_fits(fits_path)
         area = compute_area(data)
         if area > 0.0:
-            print("read error", os.path.basename(fits_path), area)
+            # 読み出しエラーとして扱う
+            logging.warning(
+                "quality_check: read error in %s (area=%f)",
+                os.path.basename(fits_path),
+                area,
+            )
+            fail_list.append(fits_path)
             continue
         pass_list.append(fits_path)
+
+    # サマリーをログに出す
+    logging.info(
+        "quality_check summary: total=%d, pass=%d, fail=%d",
+        len(fitslist),
+        len(pass_list),
+        len(fail_list),
+    )
+    if fail_list:
+        logging.info(
+            "quality_check failed files: %s",
+            ", ".join(os.path.basename(p) for p in fail_list),
+        )
+
     return pass_list
 
 
@@ -244,12 +267,21 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
 
 
 def reject_saturation(fitslist: List[str]):
-    pass_fitslist = []
+    """飽和チェックの結果をログにまとめて出力し、通過したファイルのみ返す。"""
+    pass_fitslist: List[str] = []
+    saturated_list: List[str] = []
+    no_spec_list: List[str] = []
+
     for fits_path in fitslist:
         header, data = _load_fits(fits_path)
         mask = spec_locator.spec_locator(data)
         if mask is None:
             # スペクトル位置が特定できないフレームは使わない
+            logging.warning(
+                "reject_saturation: spec not found in %s, skipping.",
+                os.path.basename(fits_path),
+            )
+            no_spec_list.append(fits_path)
             continue
 
         # スペクトル領域の画素値を取り出す
@@ -257,11 +289,34 @@ def reject_saturation(fitslist: List[str]):
 
         # SATURATION_LEVEL 以下の値が 1 つでもあれば「飽和している」とみなして除外
         if np.any(spec_values <= SATURATION_LEVEL):
-            logging.warning(f"Saturated frame rejected: {os.path.basename(fits_path)}")
+            logging.warning(
+                "reject_saturation: saturated frame rejected: %s",
+                os.path.basename(fits_path),
+            )
+            saturated_list.append(fits_path)
             continue
 
         # ここまで来たら飽和していないので採用
         pass_fitslist.append(fits_path)
+
+    # サマリーをログに出す
+    logging.info(
+        "reject_saturation summary: total=%d, pass=%d, saturated=%d, no_spec=%d",
+        len(fitslist),
+        len(pass_fitslist),
+        len(saturated_list),
+        len(no_spec_list),
+    )
+    if saturated_list:
+        logging.info(
+            "reject_saturation saturated files: %s",
+            ", ".join(os.path.basename(p) for p in saturated_list),
+        )
+    if no_spec_list:
+        logging.info(
+            "reject_saturation spec-not-found files: %s",
+            ", ".join(os.path.basename(p) for p in no_spec_list),
+        )
 
     return pass_fitslist
 
