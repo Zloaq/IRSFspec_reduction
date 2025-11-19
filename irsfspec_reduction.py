@@ -163,6 +163,7 @@ def quality_check(fitslist: List[str]):
     """品質チェックの結果をログにまとめて出力し、通過したファイルのみ返す。"""
     pass_list: List[str] = []
     fail_list: List[str] = []
+    per_file_logs: List[str] = []
 
     for fits_path in fitslist:
         header, data = _load_fits(fits_path)
@@ -175,8 +176,10 @@ def quality_check(fitslist: List[str]):
                 area,
             )
             fail_list.append(fits_path)
+            per_file_logs.append(f"{os.path.basename(fits_path)}, NG, area={area:.6f}")
             continue
         pass_list.append(fits_path)
+        per_file_logs.append(f"{os.path.basename(fits_path)}, OK, area={area:.6f}")
 
     # サマリーをログに出す
     logging.info(
@@ -193,10 +196,9 @@ def quality_check(fitslist: List[str]):
     # Append summary to QUALITY_LOG_PATH if set
     if QUALITY_LOG_PATH is not None:
         with open(QUALITY_LOG_PATH, "a") as f:
+            for line in per_file_logs:
+                f.write(line + "\n")
             f.write(f"quality_check summary: total={len(fitslist)}, pass={len(pass_list)}, fail={len(fail_list)}\n")
-            if fail_list:
-                f.write("failed files: " + ", ".join(os.path.basename(p) for p in fail_list) + "\n")
-
     return pass_list
 
 
@@ -205,7 +207,9 @@ def gen_fitsdict(fitslist: List[str]) -> Dict[str, List[str]]:
     for fits_path in fitslist:
         num1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}\.fits", os.path.basename(fits_path)).group(1)
         fitsdict.setdefault(num1, []).append(fits_path)
-    return fitsdict
+    # Return dict sorted by string num1 (insertion-ordered in Py3.7+)
+    sorted_fitsdict = {k: fitsdict[k] for k in sorted(fitsdict.keys())}
+    return sorted_fitsdict
 
 
 '''
@@ -439,7 +443,8 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
     do_scp_raw_fits(date_label, object_name, base_name_list)
-    raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")    
+    raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")
+    raw_fitslist.sort()   
     raw_fitslist = quality_check(raw_fitslist)
     fitsdict = gen_fitsdict(raw_fitslist)
     label_dict = classify_spec_location(fitsdict)
