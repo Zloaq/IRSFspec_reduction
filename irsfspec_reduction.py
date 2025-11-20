@@ -427,8 +427,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     QUALITY_LOG_PATH = outdir / "quality_check.log"
     SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
-    #print()
-    logging.info("")
+    print()
     logging.info("==== Start reduction: object=%s, date_label=%s ====", object_name, date_label)
     logging.info("Output directory: %s", outdir)
 
