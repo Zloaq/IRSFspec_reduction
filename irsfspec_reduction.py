@@ -404,8 +404,8 @@ def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: Path):
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
 
-    cds30_fitspath1 = re.sub(r"CDS\d{2}\.fits", f"CDS30.fits", fitspath1)
-    cds30_fitspath2 = re.sub(r"CDS\d{2}\.fits", f"CDS30.fits", fitspath2)
+    cds30_fitspath1 = re.sub(r"CDS\d{2}-\d{2}\.fits", f"CDS30.fits", fitspath1)
+    cds30_fitspath2 = re.sub(r"CDS\d{2}-\d{2}\.fits", f"CDS30.fits", fitspath2)
     if os.path.exists(cds30_fitspath1):
         header, _ = _load_fits(cds30_fitspath1)
     elif os.path.exists(cds30_fitspath2):
@@ -533,7 +533,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         ab_path = subtract_AB_image(cds1_path, cds2_path, outdir)
         logging.info("Created AB-subtracted image: %s", ab_path.name)
 
-    logging.info("=== End reduction: object=%s, date_label=%s ===", object_name, date_label)
+    logging.info("==== End reduction: object=%s, date_label=%s ====", object_name, date_label)
 
 
 if __name__ == "__main__":
