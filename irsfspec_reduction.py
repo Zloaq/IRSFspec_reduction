@@ -187,7 +187,7 @@ def quality_check(fitslist: List[Path]):
 
     # Append summary to QUALITY_LOG_PATH if set
     if QUALITY_LOG_PATH is not None:
-        with open(QUALITY_LOG_PATH, "a") as f:
+        with open(QUALITY_LOG_PATH, "w") as f:
             for line in per_file_logs:
                 f.write(line + "\n")
             f.write(f"quality_check summary: total={len(fitslist)}, pass={len(pass_list)}, fail={len(fail_list)}\n")
@@ -311,7 +311,7 @@ def reject_saturation(fitslist: List[Path]):
 
     # Append summary to SATURATION_LOG_PATH if set
     if SATURATION_LOG_PATH is not None:
-        with open(SATURATION_LOG_PATH, "a") as f:
+        with open(SATURATION_LOG_PATH, "w") as f:
             for line in per_file_logs:
                 f.write(line + "\n")
             f.write(
