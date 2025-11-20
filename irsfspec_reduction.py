@@ -272,7 +272,7 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
         centers[number] = center_y
 
     if not centers:
-        raise RuntimeError("No valid spectrum location found in any file.")
+        return None
 
     # ここでようやく tools.classify_spec_location に渡す
     result = csl.classify_spec_location(centers)
@@ -382,6 +382,11 @@ def create_CDS_image(fitspath1: str, fitspath2: str, savepath: Path):
 
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
+
+    cds30_fitspath = re.sub(r"CDS\d{2}\.fits", f"CDS30.fits", fitspath1)
+    if os.path.exists(cds30_fitspath):
+        header, _ = _load_fits(cds30_fitspath)
+
     image = fits1 - fits2
     fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
@@ -398,6 +403,14 @@ def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: Path):
 
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
+
+    cds30_fitspath1 = re.sub(r"CDS\d{2}\.fits", f"CDS30.fits", fitspath1)
+    cds30_fitspath2 = re.sub(r"CDS\d{2}\.fits", f"CDS30.fits", fitspath2)
+    if os.path.exists(cds30_fitspath1):
+        header, _ = _load_fits(cds30_fitspath1)
+    elif os.path.exists(cds30_fitspath2):
+        header, _ = _load_fits(cds30_fitspath2)
+
     image = fits1 - fits2
     header["IMAGE_A"] = Path(fitspath1).name
     header["IMAGE_B"] = Path(fitspath2).name
@@ -414,6 +427,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     QUALITY_LOG_PATH = outdir / "quality_check.log"
     SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
+    print()
     logging.info("==== Start reduction: object=%s, date_label=%s ====", object_name, date_label)
     logging.info("Output directory: %s", outdir)
 
@@ -443,6 +457,22 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
 
     label_dict = classify_spec_location(fitsdict)
     logging.info("Classified spectrum locations for %d groups.", len(label_dict))
+
+    if label_dict is None:
+        logging.warning(
+            "No usable raw FITS files for object=%s, date_label=%s after classification; skipping.",
+            object_name,
+            date_label,
+        )
+        return
+    
+    if len(label_dict) == 1:
+        logging.warning(
+            "Only one group for object=%s, date_label=%s; skipping.",
+            object_name,
+            date_label,
+        )
+        return
 
     pair_label_list = search_combination_with_diff_label(label_dict)
     logging.info("Found %d AB pairs with different labels.", len(pair_label_list))
