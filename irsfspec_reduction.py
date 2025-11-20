@@ -44,10 +44,11 @@ def get_output_dir(object_name: str, date_label: str) -> Path:
 
 
 
-def _load_fits(fits_path: str) -> Tuple[fits.Header, np.ndarray]:
-    if not os.path.exists(fits_path):
+def _load_fits(fits_path: Path) -> Tuple[fits.Header, np.ndarray]:
+    fits_path = Path(fits_path)
+    if not fits_path.exists():
         raise FileNotFoundError(f"FITS not found: {fits_path}")
-    with fits.open(fits_path, memmap=False) as hdul:
+    with fits.open(str(fits_path), memmap=False) as hdul:
         header = hdul[0].header
         data = hdul[0].data
     if data is None:
@@ -56,19 +57,21 @@ def _load_fits(fits_path: str) -> Tuple[fits.Header, np.ndarray]:
     return header, data
 
 
-def find_dark(fitsname, darkpath):
-    fits_basename = Path(fitsname).name
+def find_dark(fitsname, darkpath) -> Path:
+    fitsname = Path(fitsname)
+    darkpath = Path(darkpath)
+    fits_basename = fitsname.name
     m = re.search(r"(CDS\d{2})", fits_basename)
     if not m:
         raise ValueError(f"Could not extract CDS number from filename: {fits_basename}")
     cds_num = m.group(1)
 
-    pattern = str(Path(darkpath) / f"*{cds_num}.fits")
+    pattern = str(darkpath / f"*{cds_num}.fits")
     matches = glob.glob(pattern)
     if not matches:
         raise FileNotFoundError(f"No dark frame found for {cds_num} in {darkpath}")
 
-    return matches[0]
+    return Path(matches[0])
 
 
 def db_search(conn: sqlite3.Connection, object_name, date_label=None) -> Dict[str, List[str]]:
@@ -159,10 +162,10 @@ def compute_area(data, bins: int = BINS, rng=QUALITY_HIST_RANGE, log_hist: bool 
     return hist_area_from_counts(hist, bin_edges, log_hist=log_hist)
 
 
-def quality_check(fitslist: List[str]):
+def quality_check(fitslist: List[Path]):
     """品質チェックの結果をログにまとめて出力し、通過したファイルのみ返す。"""
-    pass_list: List[str] = []
-    fail_list: List[str] = []
+    pass_list: List[Path] = []
+    fail_list: List[Path] = []
     per_file_logs: List[str] = []
 
     for fits_path in fitslist:
@@ -172,19 +175,19 @@ def quality_check(fitslist: List[str]):
             # 読み出しエラーとして扱う
             logging.warning(
                 "quality_check: read error in %s (area=%f)",
-                os.path.basename(fits_path),
+                fits_path.name,
                 area,
             )
             fail_list.append(fits_path)
-            per_file_logs.append(f"{os.path.basename(fits_path)}, NG, area={area:.6f}")
+            per_file_logs.append(f"{fits_path.name}, NG, area={area:.6f}")
             continue
         pass_list.append(fits_path)
-        per_file_logs.append(f"{os.path.basename(fits_path)}, OK, area={area:.6f}")
+        per_file_logs.append(f"{fits_path.name}, OK, area={area:.6f}")
 
     if fail_list:
         logging.info(
             "quality_check failed files: %s",
-            ", ".join(os.path.basename(p) for p in fail_list),
+            ", ".join(p.name for p in fail_list),
         )
     # Append summary to QUALITY_LOG_PATH if set
     if QUALITY_LOG_PATH is not None:
@@ -195,10 +198,10 @@ def quality_check(fitslist: List[str]):
     return pass_list
 
 
-def gen_fitsdict(fitslist: List[str]) -> Dict[str, List[str]]:
-    fitsdict: Dict[str, List[str]] = {}
+def gen_fitsdict(fitslist: List[Path]) -> Dict[str, List[Path]]:
+    fitsdict: Dict[str, List[Path]] = {}
     for fits_path in fitslist:
-        num1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}\.fits", os.path.basename(fits_path)).group(1)
+        num1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}\.fits", fits_path.name).group(1)
         fitsdict.setdefault(num1, []).append(fits_path)
     # Return dict sorted by string num1 (insertion-ordered in Py3.7+)
     sorted_fitsdict = {k: fitsdict[k] for k in sorted(fitsdict.keys())}
@@ -237,8 +240,8 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     return result
 '''
 
-def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
-    """
+def classify_spec_location(fitsdict: Dict[str, List[Path]]) -> Dict[str, str]:
+    """ 
     fitsdict: {number: [fits_path, ...]}
     各 number について、mask != None となる最初のファイルの中心位置を使う。
     Returns: {No: label}
@@ -250,6 +253,7 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
         fitslist_sorted = sorted(fitslist, reverse=True)
 
         center_y = None
+        mask = None
 
         for fits_path in fitslist_sorted:
             header, data = _load_fits(fits_path)
@@ -268,7 +272,7 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
             # その番号の全ファイルで mask が見つからなかった → スキップ
             logging.warning(f"spec_locator failed for all files of No {number}; skipping.")
             continue
-        
+
         centers[number] = center_y
 
     if not centers:
@@ -279,11 +283,11 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     return result
 
 
-def reject_saturation(fitslist: List[str]):
+def reject_saturation(fitslist: List[Path]):
     """飽和チェックの結果をログにまとめて出力し、通過したファイルのみ返す。"""
-    pass_fitslist: List[str] = []
-    saturated_list: List[str] = []
-    no_spec_list: List[str] = []
+    pass_fitslist: List[Path] = []
+    saturated_list: List[Path] = []
+    no_spec_list: List[Path] = []
     per_file_logs: List[str] = []
 
     for fits_path in fitslist:
@@ -293,7 +297,7 @@ def reject_saturation(fitslist: List[str]):
             # スペクトル位置が特定できないフレームもゆるそう
             no_spec_list.append(fits_path)
             pass_fitslist.append(fits_path)
-            per_file_logs.append(f"{os.path.basename(fits_path)}, NO_SPEC")
+            per_file_logs.append(f"{fits_path.name}, NO_SPEC")
             continue
 
         # スペクトル領域の画素値を取り出す
@@ -302,12 +306,12 @@ def reject_saturation(fitslist: List[str]):
         # SATURATION_LEVEL 以下の値が 1 つでもあれば「飽和している」とみなして除外
         if np.any(spec_values <= SATURATION_LEVEL):
             saturated_list.append(fits_path)
-            per_file_logs.append(f"{os.path.basename(fits_path)}, SATURATED")
+            per_file_logs.append(f"{fits_path.name}, SATURATED")
             continue
 
         # spec があって、飽和していないので採用
         pass_fitslist.append(fits_path)
-        per_file_logs.append(f"{os.path.basename(fits_path)}, OK")
+        per_file_logs.append(f"{fits_path.name}, OK")
 
     # Append summary to SATURATION_LOG_PATH if set
     if SATURATION_LOG_PATH is not None:
@@ -340,15 +344,15 @@ def search_combination_with_diff_label(
 
 
 
-def search_combination_for_set_AB(fitslist1: List[str], fitslist2: List[str]):
+def search_combination_for_set_AB(fitslist1: List[Path], fitslist2: List[Path]):
     results: List[Tuple[str, str]] = []
     cdsnum1_list = []
     cdsnum2_list = []
     for fits_path1 in fitslist1:
-        cdsnum1 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fits_path1)).group(1)
+        cdsnum1 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", fits_path1.name).group(1)
         cdsnum1_list.append(cdsnum1)
     for fits_path2 in fitslist2:
-        cdsnum2 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", os.path.basename(fits_path2)).group(1)
+        cdsnum2 = re.match(r"spec\d{6}-\d{4}_CDS(\d{2})\.fits", fits_path2.name).group(1)
         cdsnum2_list.append(cdsnum2)
         
     # Convert to integers for numeric comparison
@@ -371,20 +375,25 @@ def search_combination_for_set_AB(fitslist1: List[str], fitslist2: List[str]):
     return idx1_min, idx2_min, idx1_max, idx2_max
 
 
-def create_CDS_image(fitspath1: str, fitspath2: str, savepath: Path):
-    cdsnum1 = re.match(r"spec\d{6}-(\d{4})_CDS(\d{2})\.fits", Path(fitspath1).name).group(2)
-    cdsnum2 = re.match(r"spec\d{6}-(\d{4})_CDS(\d{2})\.fits", Path(fitspath2).name).group(2)
+def create_CDS_image(fitspath1: Path, fitspath2: Path, savepath: Path) -> Path:
+    fitspath1 = Path(fitspath1)
+    fitspath2 = Path(fitspath2)
+    savepath = Path(savepath)
+
+    cdsnum1 = re.match(r"spec\d{6}-(\d{4})_CDS(\d{2})\.fits", fitspath1.name).group(2)
+    cdsnum2 = re.match(r"spec\d{6}-(\d{4})_CDS(\d{2})\.fits", fitspath2.name).group(2)
 
     # 元のパスの basename だけを使って新しいファイル名を作る
-    basename = Path(fitspath1).name
+    basename = fitspath1.name
     new_basename = re.sub(r"CDS\d{2}\.fits", f"CDS{cdsnum1}-{cdsnum2}.fits", basename)
-    new_fitspath = Path(savepath) / new_basename
+    new_fitspath = savepath / new_basename
 
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
 
-    cds30_fitspath = re.sub(r"CDS\d{2}\.fits", f"CDS30.fits", fitspath1)
-    if os.path.exists(cds30_fitspath):
+    cds30_name = re.sub(r"CDS\d{2}\.fits", "CDS30.fits", fitspath1.name)
+    cds30_fitspath = fitspath1.with_name(cds30_name)
+    if cds30_fitspath.exists():
         header, _ = _load_fits(cds30_fitspath)
 
     image = fits1 - fits2
@@ -392,28 +401,34 @@ def create_CDS_image(fitspath1: str, fitspath2: str, savepath: Path):
     return new_fitspath
 
 
-def subtract_AB_image(fitspath1: str, fitspath2: str, savepath: Path):
-    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", Path(fitspath1).name).group(1)
-    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", Path(fitspath2).name).group(1)
+def subtract_AB_image(fitspath1: Path, fitspath2: Path, savepath: Path) -> Path:
+    fitspath1 = Path(fitspath1)
+    fitspath2 = Path(fitspath2)
+    savepath = Path(savepath)
+
+    imagenum1 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", fitspath1.name).group(1)
+    imagenum2 = re.match(r"spec\d{6}-(\d{4})_CDS\d{2}-\d{2}\.fits", fitspath2.name).group(1)
 
     # 元のパスの basename から AB 減算後のファイル名を作る
-    basename = Path(fitspath1).name
+    basename = fitspath1.name
     new_basename = re.sub(r"\d{4}_CDS\d{2}-\d{2}\.fits", f"{imagenum1}-{imagenum2}.fits", basename)
-    new_fitspath = Path(savepath) / new_basename
+    new_fitspath = savepath / new_basename
 
     header, fits1 = _load_fits(fitspath1)
     _, fits2 = _load_fits(fitspath2)
 
-    cds30_fitspath1 = re.sub(r"CDS\d{2}-\d{2}\.fits", f"CDS30.fits", fitspath1)
-    cds30_fitspath2 = re.sub(r"CDS\d{2}-\d{2}\.fits", f"CDS30.fits", fitspath2)
-    if os.path.exists(cds30_fitspath1):
+    cds30_name1 = re.sub(r"CDS\d{2}-\d{2}\.fits", "CDS30.fits", fitspath1.name)
+    cds30_name2 = re.sub(r"CDS\d{2}-\d{2}\.fits", "CDS30.fits", fitspath2.name)
+    cds30_fitspath1 = fitspath1.with_name(cds30_name1)
+    cds30_fitspath2 = fitspath2.with_name(cds30_name2)
+    if cds30_fitspath1.exists():
         header, _ = _load_fits(cds30_fitspath1)
-    elif os.path.exists(cds30_fitspath2):
+    elif cds30_fitspath2.exists():
         header, _ = _load_fits(cds30_fitspath2)
 
     image = fits1 - fits2
-    header["IMAGE_A"] = Path(fitspath1).name
-    header["IMAGE_B"] = Path(fitspath2).name
+    header["IMAGE_A"] = fitspath1.name
+    header["IMAGE_B"] = fitspath2.name
     fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
 
@@ -433,6 +448,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
 
     do_scp_raw_fits(date_label, object_name, base_name_list)
     raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")
+    raw_fitslist = [Path(p) for p in raw_fitslist]
     raw_fitslist.sort()
 
     logging.info("Found %d raw FITS files before quality check.", len(raw_fitslist))
@@ -456,8 +472,6 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     logging.info("Number of Num1 groups after quality check: %d", len(fitsdict))
 
     label_dict = classify_spec_location(fitsdict)
-    logging.info("Classified spectrum locations for %d groups.", len(label_dict))
-
     if label_dict is None:
         logging.warning(
             "No usable raw FITS files for object=%s, date_label=%s after classification; skipping.",
@@ -465,6 +479,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
             date_label,
         )
         return
+    logging.info("Classified spectrum locations for %d groups.", len(label_dict))
     
     if len(label_dict) == 1:
         logging.warning(
