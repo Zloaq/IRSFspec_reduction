@@ -184,11 +184,7 @@ def quality_check(fitslist: List[Path]):
         pass_list.append(fits_path)
         per_file_logs.append(f"{fits_path.name}, OK, area={area:.6f}")
 
-    if fail_list:
-        logging.info(
-            "quality_check failed files: %s",
-            ", ".join(p.name for p in fail_list),
-        )
+
     # Append summary to QUALITY_LOG_PATH if set
     if QUALITY_LOG_PATH is not None:
         with open(QUALITY_LOG_PATH, "a") as f:
