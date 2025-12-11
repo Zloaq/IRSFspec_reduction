@@ -117,13 +117,34 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
 
     # Perform scp per Num1
     for num1 in sorted(num1_set):
-        src = f"{RAID_PC}:{RAID_DIR}/{date_label}/spec/spec{date_label}*{num1}*CDS*.fits"
+        src = f"{RAID_PC}:{RAID_DIR}/{date_label}/spec/spec{date_label}*{num1}*CDS*.fits*"
         dst = f"{RAWDATA_DIR}/{object_name}/{date_label}"
         os.makedirs(dst, exist_ok=True)
         cmd = ["scp", src, dst]
 
         #logging.info(f"COPY: {src}")
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,)
+
+
+import gzip
+import shutil
+
+def gunzip_if_needed(directory: Path, remove_gz: bool = True):
+    """directory 内の *.fits.gz を解凍し、.fits を生成する。"""
+    for gz_path in directory.glob("*.fits.gz"):
+        fits_path = gz_path.with_suffix("")  # .gz を取る（*.fits になる）
+        if fits_path.exists():
+            # 既に解凍済みならスキップ
+            continue
+
+        with gzip.open(gz_path, "rb") as f_in, open(fits_path, "wb") as f_out:
+            shutil.copyfileobj(f_in, f_out)
+
+        if remove_gz:
+            gz_path.unlink()
+            logging.info(f"Decompressed and removed: {gz_path.name} -> {fits_path.name}")
+        else:
+            logging.info(f"Decompressed: {gz_path.name} -> {fits_path.name}")
 
 
 def compute_hist(data: np.ndarray, bins: int = BINS, rng=QUALITY_HIST_RANGE):
@@ -443,9 +464,10 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     logging.info("Output directory: %s", outdir)
 
     do_scp_raw_fits(date_label, object_name, base_name_list)
-    raw_fitslist = glob.glob(f"{RAWDATA_DIR}/{object_name}/{date_label}/*.fits")
-    raw_fitslist = [Path(p) for p in raw_fitslist]
-    raw_fitslist.sort()
+    datadir = Path(RAWDATA_DIR) / object_name / date_label
+    gunzip_if_needed(datadir)
+
+    raw_fitslist = sorted(datadir.glob("*.fits"))
 
     logging.info("Found %d raw FITS files before quality check.", len(raw_fitslist))
 
