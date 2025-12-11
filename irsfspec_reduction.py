@@ -486,9 +486,8 @@ def classify_spec_location(fitsdict: Dict[str, List[Path]], date_label: str) -> 
             if dark is None:
                 darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
                 _, dark = _load_fits(darkpath)
-                logging.warning(f"dark not found for {fits_path}; skipping.")
-                continue
-            
+
+
             image = data - dark
             mask = spec_locator.spec_locator(image)
             if mask is None:
