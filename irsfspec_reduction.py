@@ -17,6 +17,11 @@ from typing import Dict, List, Set, Tuple
 from tools import spec_locator
 from tools import classify_spec_location as csl
 
+from astropy.utils.exceptions import AstropyWarning
+import warnings
+from collections import defaultdict
+import tempfile
+
 load_dotenv("config.env")
 
 DB_PATH = os.getenv("DB_PATH")
@@ -74,6 +79,8 @@ def find_dark(fitsname, darkpath) -> Path:
     return Path(matches[0])
 
 
+
+
 def db_search(conn: sqlite3.Connection, object_name, date_label=None) -> Dict[str, List[str]]:
     
     """
@@ -84,13 +91,15 @@ def db_search(conn: sqlite3.Connection, object_name, date_label=None) -> Dict[st
         query = (
             "SELECT date_label, base_name "
             "FROM frames "
-            f"WHERE object LIKE '{object_name}' "
+            f"WHERE filepath COLLATE NOCASE LIKE '%/spec%'" 
+            f"AND object LIKE '{object_name}' "
         )
     else:
         query = (
             "SELECT date_label, base_name "
             "FROM frames "
-            f"WHERE object LIKE '{object_name}' "
+            f"WHERE filepath COLLATE NOCASE LIKE '%/spec%'" 
+            f"AND object LIKE '{object_name}' "
             f"AND date_label = '{date_label}' "
         )
     cur = conn.cursor()
@@ -125,7 +134,6 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
         #logging.info(f"COPY: {src}")
         subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,)
 
-
 import gzip
 import shutil
 
@@ -145,6 +153,205 @@ def gunzip_if_needed(directory: Path, remove_gz: bool = True):
             logging.info(f"Decompressed and removed: {gz_path.name} -> {fits_path.name}")
         else:
             logging.info(f"Decompressed: {gz_path.name} -> {fits_path.name}")
+
+def group_consecutive_from_basenames(base_name_list: List[str]) -> List[Tuple[int, int]]:
+    """
+    base_name_list から spec??????-NNNN.fits の NNNN を拾って、
+    連番のかたまりごとに (start, end) を返す。
+
+    例:
+      ["spec240101-0001.fits", "spec240101-0002.fits",
+       "spec240101-0005.fits", "spec240101-0006.fits"]
+    -> [(1, 2), (5, 6)]
+    """
+    nums = []
+
+    for bn in base_name_list:
+        m = re.match(r"spec(\d+)-(\d{4})\.fits$", bn)
+        if not m:
+            continue
+        num = int(m.group(2))
+        nums.append(num)
+
+    if not nums:
+        return []
+
+    nums = sorted(set(nums))
+
+    ranges: List[Tuple[int, int]] = []
+    start = prev = nums[0]
+
+    for n in nums[1:]:
+        if n == prev + 1:
+            # 連番継続
+            prev = n
+        else:
+            # ここまでの固まりを確定
+            ranges.append((start, prev))
+            start = prev = n
+
+    # 最後の固まりを追加
+    ranges.append((start, prev))
+
+    return ranges
+
+
+
+def do_average_noise(date_label: str):
+    dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
+    if not dst_dir.exists():
+        logging.warning(f"Noise directory does not exist: {dst_dir}")
+        return
+
+    noise_list = list(dst_dir.glob("spec*CDS30.fits"))
+    if not noise_list:
+        logging.warning(f"No noize files found in {dst_dir}")
+        return
+
+    # EXP_TIME ごとにグループ分け
+    groups = defaultdict(list)  # key: exptime (float), value: list[Path]
+    for fits_path in noise_list:
+        try:
+            with warnings.catch_warnings():
+                # Astropy の warning を例外に格上げして、壊れていそうな FITS を弾く
+                warnings.simplefilter("error", AstropyWarning)
+                with fits.open(fits_path, memmap=False) as hdul:
+                    hdr = hdul[0].header
+                    exptime = hdr.get("EXP_TIME", None)
+            exptime_val = float(exptime)
+        except AstropyWarning as e:
+            logging.warning(f"AstropyWarning while reading header from {fits_path}: {e}. skipping.")
+            continue
+        except (TypeError, ValueError):
+            logging.warning(f"failed to read EXP_TIME from {fits_path}. skipping.")
+            continue
+        except OSError as e:
+            logging.warning(f"failed to open {fits_path}: {e}. skipping.")
+            continue
+
+        groups[exptime_val].append(fits_path)
+
+    if not groups:
+        logging.warning(f"No valid noise frames found in {dst_dir}")
+        return
+
+    # 各 EXP_TIME ごとに、CDS01〜CDS30 を平均化
+    for exptime_val, file_list in groups.items():
+        if not file_list:
+            continue
+
+        try:
+            exptime_int = int(round(exptime_val))
+        except Exception:
+            # 念のため、変換に失敗したらそのまま文字列にして使う
+            exptime_str = str(exptime_val)
+        else:
+            exptime_str = f"{exptime_int:02d}"
+
+        # file_list 内には同じ EXP_TIME の specYYMMDD-NNNN_CDS30.fits が並んでいる想定
+        for cds in range(1, 31):  # CDS01〜CDS30
+            data_stack = []
+            header_ref = None
+
+            for fits_path in file_list:
+                m = re.match(r"(spec\d{6}-\d{4})_CDS30\.fits$", fits_path.name)
+                if not m:
+                    logging.warning(f"Filename does not match pattern for CDS30: {fits_path.name}. skipping.")
+                    continue
+
+                prefix = m.group(1)  # specYYMMDD-NNNN
+                target_name = f"{prefix}_CDS{cds:02d}.fits"
+                target_path = fits_path.with_name(target_name)
+
+                if not target_path.exists():
+                    logging.warning(f"Missing CDS{cds:02d} file corresponding to {fits_path.name}: {target_path.name}. skipping.")
+                    continue
+
+                try:
+                    with warnings.catch_warnings():
+                        warnings.simplefilter("error", AstropyWarning)
+                        with fits.open(target_path, memmap=False) as hdul:
+                            if header_ref is None:
+                                # ヘッダは代表として 1 枚だけコピー
+                                header_ref = hdul[0].header.copy()
+                            data = hdul[0].data
+                            if data is None:
+                                logging.warning(f"No data in primary HDU: {target_path}")
+                                continue
+                            data_stack.append(np.asarray(data, dtype=np.float64))
+                except AstropyWarning as e:
+                    logging.warning(f"AstropyWarning while reading data from {target_path}: {e}. skipping.")
+                    continue
+                except OSError as e:
+                    logging.warning(f"failed to open {target_path}: {e}. skipping.")
+                    continue
+
+            if not data_stack:
+                logging.warning(
+                    f"No valid frames to average for EXP_TIME={exptime_val}, CDS{cds:02d} in {dst_dir}. skipping."
+                )
+                continue
+
+            # 平均画像を作成
+            stack = np.stack(data_stack, axis=0)
+            mean_image = np.mean(stack, axis=0).astype(np.float32)
+
+            if header_ref is None:
+                header_ref = fits.Header()
+
+            out_name = f"noise{date_label}_{exptime_str}_CDS{cds:02d}.fits"
+            out_path = dst_dir / out_name
+
+            fits.writeto(out_path, mean_image, header=header_ref, overwrite=True)
+            logging.info(
+                "Created noise frame: %s (EXP_TIME=%s, CDS%02d, N=%d)",
+                out_path.name,
+                exptime_str,
+                cds,
+                len(data_stack),
+            )
+
+    # 
+
+
+def load_noise(date_label: str, exptime: int):
+    noise_path = Path(RAWDATA_DIR) / "noise" / date_label / f"noise{date_label}_{exptime:02d}.fits"
+    if not noise_path.exists():
+        logging.warning(f"Noise file does not exist: {noise_path}")
+        return None
+    with fits.open(noise_path, memmap=False) as hdul:
+        header = hdul[0].header
+        data = hdul[0].data.astype(np.float64)
+        
+    return header, data
+
+
+def load_dark(fitspath):
+    fitspath = Path(fitspath)
+    if not fitspath.exists():
+        raise FileNotFoundError(f"FITS not found: {fitspath}")
+    cds30_name = re.sub(r"CDS\d{2}\.fits", "CDS30.fits", fitspath)
+    date_label = fitspath.parent.name
+    cds30_fitspath = fitspath.with_name(cds30_name)
+    header, _ = _load_fits(cds30_fitspath)
+    exptime = header["EXPTIME"]
+    dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
+    noise_path = dst_dir / f"noise{date_label}_{exptime:02d}.fits"
+    if not noise_path.exists():
+        logging.warning(f"Noise file does not exist: {noise_path}")
+        return None
+    with fits.open(noise_path, memmap=False) as hdul:
+        data = hdul[0].data.astype(np.float64)
+        
+    return data
+
+
+def do_remove_raw_fits(date_label: str, object_name: str):
+    target_dir = Path(RAWDATA_DIR) / object_name / date_label
+    cmd = ["rm", "-f", str(target_dir / "spec*-????.fits")]
+    subprocess.run(" ".join(cmd), shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
+
+
 
 
 def compute_hist(data: np.ndarray, bins: int = BINS, rng=QUALITY_HIST_RANGE):
@@ -257,7 +464,7 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     return result
 '''
 
-def classify_spec_location(fitsdict: Dict[str, List[Path]]) -> Dict[str, str]:
+def classify_spec_location(fitsdict: Dict[str, List[Path]], date_label: str) -> Dict[str, str]:
     """ 
     fitsdict: {number: [fits_path, ...]}
     各 number について、mask != None となる最初のファイルの中心位置を使う。
@@ -273,9 +480,15 @@ def classify_spec_location(fitsdict: Dict[str, List[Path]]) -> Dict[str, str]:
         mask = None
 
         for fits_path in fitslist_sorted:
+
             header, data = _load_fits(fits_path)
-            darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
-            _, dark = _load_fits(darkpath)
+            dark = load_dark(fits_path)
+            if dark is None:
+                #darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
+                #_, dark = _load_fits(darkpath)
+                logging.warning(f"dark not found for {fits_path}; skipping.")
+                continue
+            
             image = data - dark
             mask = spec_locator.spec_locator(image)
             if mask is None:
@@ -586,7 +799,13 @@ if __name__ == "__main__":
         date_label = None
     conn = sqlite3.connect(DB_PATH)
     filepath_dict = db_search(conn, object_name, date_label)
+    darkpath_dict = db_search(conn, "dark", date_label)
     conn.close()
+
+    for date_label, base_name_list in darkpath_dict.items():
+        do_scp_raw_fits(date_label, "noise", base_name_list)
+        do_average_noise(date_label)
+        do_remove_raw_fits(date_label, "noise")
     
     for date_label, base_name_list in filepath_dict.items():
         reduction_main(object_name, date_label, base_name_list)
