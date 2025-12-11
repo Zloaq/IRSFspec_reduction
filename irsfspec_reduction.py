@@ -563,7 +563,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         cds1_path = create_CDS_image(fitslist1[idx1_min], fitslist1[idx1_max], outdir)
         cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max], outdir)
 
-        ab_path = subtract_AB_image(cds1_path, cds2_path, outdir)
+        ab_path = subtract_AB_image(cds2_path, cds1_path, outdir)
         logging.info("Created AB-subtracted image: %s", ab_path.name)
 
     logging.info("==== End reduction: object=%s, date_label=%s ====", object_name, date_label)
