@@ -6,6 +6,29 @@ import sys
 import sqlite3
 import subprocess
 import logging
+import logging.handlers
+def setup_job_logger(outdir: Path, object_name: str, date_label: str) -> logging.Logger:
+    """並列実行でもログが混ざらないよう、ジョブごとにファイルへ出力する。
+
+    - outdir/reduction.log に書く（ジョブ単位で上書き）
+    - 1 行の prefix に processName / object / date を入れる
+    """
+    logger = logging.getLogger(f"reduction.{object_name}.{date_label}")
+    logger.setLevel(logging.INFO)
+    logger.propagate = False  # root へ流さない（混線防止）
+
+    # 既存ハンドラをクリア（二重出力防止）
+    logger.handlers.clear()
+
+    log_path = Path(outdir) / "reduction.log"
+    fh = logging.FileHandler(log_path, mode="w")
+    fmt = logging.Formatter(
+        fmt="%(asctime)s [%(levelname)s] [%(processName)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
+    )
+    fh.setFormatter(fmt)
+    logger.addHandler(fh)
+    return logger
 from pathlib import Path
 import re
 import glob
@@ -721,14 +744,17 @@ def subtract_AB_image(fitspath1: Path, fitspath2: Path, savepath: Path) -> Path:
 def reduction_main(object_name: str, date_label: str, base_name_list: List[str]):
     outdir = get_output_dir(object_name, date_label)
 
+    # Set up per-job logger
+    logger = setup_job_logger(outdir, object_name, date_label)
+
     # Set global log file paths for this reduction
     global QUALITY_LOG_PATH, SATURATION_LOG_PATH
     QUALITY_LOG_PATH = outdir / "quality_check.log"
     SATURATION_LOG_PATH = outdir / "reject_saturation.log"
 
     print()
-    logging.info("==== Start reduction: object=%s, date_label=%s ====", object_name, date_label)
-    logging.info("Output directory: %s", outdir)
+    logger.info("==== Start reduction: object=%s, date_label=%s ====", object_name, date_label)
+    logger.info("Output directory: %s", outdir)
 
     do_scp_raw_fits(date_label, object_name, base_name_list)
     datadir = Path(RAWDATA_DIR) / object_name / date_label
@@ -736,17 +762,17 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
 
     raw_fitslist = sorted(datadir.glob("*.fits"))
 
-    logging.info("Found %d raw FITS files before quality check.", len(raw_fitslist))
+    logger.info("Found %d raw FITS files before quality check.", len(raw_fitslist))
 
     n_before_quality = len(raw_fitslist)
     raw_fitslist, _ = quality_check(raw_fitslist)
-    logging.info(
+    logger.info(
         "Quality check result: %d -> %d files",
         n_before_quality,
         len(raw_fitslist),
     )
     if not raw_fitslist:
-        logging.warning(
+        logger.warning(
             "No usable raw FITS files for object=%s, date_label=%s after quality check; skipping.",
             object_name,
             date_label,
@@ -754,20 +780,20 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         return
 
     fitsdict = gen_fitsdict(raw_fitslist)
-    logging.info("Number of Num1 groups after quality check: %d", len(fitsdict))
+    logger.info("Number of Num1 groups after quality check: %d", len(fitsdict))
 
     label_dict = classify_spec_location(fitsdict)
     if label_dict is None:
-        logging.warning(
+        logger.warning(
             "No usable raw FITS files for object=%s, date_label=%s after classification; skipping.",
             object_name,
             date_label,
         )
         return
-    logging.info("Classified spectrum locations for %d groups.", len(label_dict))
+    logger.info("Classified spectrum locations for %d groups.", len(label_dict))
     
     if len(label_dict) == 1:
-        logging.warning(
+        logger.warning(
             "Only one group for object=%s, date_label=%s; skipping.",
             object_name,
             date_label,
@@ -775,10 +801,10 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         return
 
     pair_label_list = search_combination_with_diff_label(label_dict)
-    logging.info("Found %d AB pairs with different labels.", len(pair_label_list))
+    logger.info("Found %d AB pairs with different labels.", len(pair_label_list))
 
     for no1, no2 in pair_label_list:
-        logging.info("== Processing pair: No %s (group1) and No %s (group2)", no1, no2)
+        logger.info("== Processing pair: No %s (group1) and No %s (group2)", no1, no2)
         fitslist1 = fitsdict[no1]
         fitslist2 = fitsdict[no2]
 
@@ -786,7 +812,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         fitslist1 = reject_saturation(fitslist1)
         fitslist2 = reject_saturation(fitslist2)
 
-        logging.info(
+        logger.info(
             "After saturation rejection: No %s -> %d frames, No %s -> %d frames",
             no1,
             len(fitslist1),
@@ -796,7 +822,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
 
         # 飽和除外の結果、どちらかが空になったらこのペアはスキップ
         if not fitslist1 or not fitslist2:
-            logging.warning(
+            logger.warning(
                 "No usable frames remain for pair (No %s, No %s) after saturation rejection; skipping.",
                 no1,
                 no2,
@@ -809,7 +835,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         combo = search_combination_for_set_AB(fitslist1, fitslist2)
         if combo is None:
             # 共通の CDS 番号が 2 つ未満 → AB 画像を作れないのでスキップ
-            logging.warning(
+            logger.warning(
                 "Not enough common CDS numbers between No %s and No %s; skipping.",
                 no1,
                 no2,
@@ -817,7 +843,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
             continue
 
         idx1_min, idx2_min, idx1_max, idx2_max = combo
-        logging.info(
+        logger.info(
             "Using CDS indices: No %s -> (%d, %d), No %s -> (%d, %d)",
             no1,
             idx1_min + 1,
@@ -831,9 +857,9 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         cds2_path = create_CDS_image(fitslist2[idx2_min], fitslist2[idx2_max], outdir)
 
         ab_path = subtract_AB_image(cds1_path, cds2_path, outdir)
-        logging.info("Created AB-subtracted image: %s", ab_path.name)
+        logger.info("Created AB-subtracted image: %s", ab_path.name)
 
-    logging.info("==== End reduction: object=%s, date_label=%s ====", object_name, date_label)
+    logger.info("==== End reduction: object=%s, date_label=%s ====", object_name, date_label)
 
 
 def worker_init() -> None:
@@ -841,11 +867,16 @@ def worker_init() -> None:
     root_logger = logging.getLogger()
     root_logger.handlers.clear()
 
+    # ワーカープロセスは root へは出さない（混線防止）
+    root_logger.setLevel(logging.WARNING)
+    root_logger.addHandler(logging.NullHandler())
+
 
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
-        format="%(asctime)s [%(levelname)s] %(message)s"
+        format="%(asctime)s [%(levelname)s] [%(processName)s] %(message)s",
+        datefmt="%Y-%m-%d %H:%M:%S",
     )
     if len(sys.argv) != 2 and len(sys.argv) != 3:
         print("Usage: python irsfspec_reduction.py [object_name] [date_label]")
