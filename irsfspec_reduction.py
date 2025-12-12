@@ -916,6 +916,8 @@ if __name__ == "__main__":
             gunzip_if_needed(noise_dir, remove_gz=True)
             do_average_noise(date_label)
             do_remove_raw_fits(date_label, "noise")
+        else:
+            logging.info("Noise already exists: %s", noise_dir)
     
     with ProcessPoolExecutor(max_workers=NUM_PROCESS, initializer=worker_init) as ex:
         future_to_job = {
