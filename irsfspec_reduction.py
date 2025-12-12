@@ -807,8 +807,8 @@ if __name__ == "__main__":
 
     for date_label, base_name_list in darkpath_dict.items():
         do_scp_raw_fits(date_label, "noise", base_name_list)
-        noise_dir = Path(f"{RAWDATA_DIR}/{object_name}/{date_label}")
-        gunzip_if_needed(noise_dir, remove_gz=False)
+        noise_dir = Path(f"{RAWDATA_DIR}/noise/{date_label}")
+        gunzip_if_needed(noise_dir, remove_gz=True)
         do_average_noise(date_label)
         do_remove_raw_dark_fits(date_label, "noise")
     
