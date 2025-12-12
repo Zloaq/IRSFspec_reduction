@@ -904,6 +904,11 @@ def worker_init() -> None:
     root_logger.addHandler(logging.NullHandler())
 
 
+def main(object_name, date_label, base_name_list):
+    reduction_main(object_name, date_label, base_name_list)
+    do_remove_raw_fits(date_label, object_name)
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -937,7 +942,7 @@ if __name__ == "__main__":
     
     with ProcessPoolExecutor(max_workers=NUM_PROCESS, initializer=worker_init) as ex:
         future_to_job = {
-            ex.submit(reduction_main, object_name, date_label, base_name_list): (object_name, date_label, base_name_list)
+            ex.submit(main, object_name, date_label, base_name_list): (object_name, date_label, base_name_list)
             for date_label, base_name_list in filepath_dict.items()
         }
         total = len(future_to_job)
