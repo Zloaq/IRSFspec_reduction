@@ -159,8 +159,32 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
         os.makedirs(dst, exist_ok=True)
         cmd = ["scp", src, dst]
 
-        #logging.info(f"COPY: {src}")
-        subprocess.run(cmd, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL,)
+        # logging.info(f"COPY: {src}")
+        try:
+            subprocess.run(
+                cmd,
+                check=True,
+                stdout=subprocess.DEVNULL,
+                stderr=subprocess.DEVNULL,
+            )
+        except subprocess.CalledProcessError as e:
+            logging.warning(
+                "scp failed (num1=%s) src=%s -> dst=%s (returncode=%s). continuing.",
+                num1,
+                src,
+                dst,
+                getattr(e, "returncode", None),
+            )
+            continue
+        except Exception as e:
+            logging.warning(
+                "scp raised unexpected error (num1=%s) src=%s -> dst=%s (%s). continuing.",
+                num1,
+                src,
+                dst,
+                e,
+            )
+            continue
 
 import gzip
 import shutil
@@ -912,11 +936,20 @@ if __name__ == "__main__":
         done = 0
         for future in as_completed(future_to_job):
             object_name, date_label, base_name_list = future_to_job[future]
-            future.result()
+            try:
+                future.result()
+                status = "finished"
+            except Exception as e:
+                logging.exception(
+                    "Job failed: object=%s date_label=%s (continuing)",
+                    object_name,
+                    date_label,
+                )
+                status = "failed"
+
             done += 1
-            sys.stdout.write(f"[{done}/{total}] finished {object_name} {date_label}\n")
+            sys.stdout.write(f"[{done}/{total}] {status} {object_name} {date_label}\n")
             sys.stdout.flush()
-            future.result()
 
     # for date_label, base_name_list in filepath_dict.items():
     #     reduction_main(object_name, date_label, base_name_list)
