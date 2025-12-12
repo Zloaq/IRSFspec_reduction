@@ -18,6 +18,7 @@ from tools import spec_locator
 from tools import classify_spec_location as csl
 
 from astropy.utils.exceptions import AstropyWarning
+from concurrent.futures import ProcessPoolExecutor, as_completed
 import warnings
 from collections import defaultdict
 import tempfile
@@ -38,6 +39,8 @@ SATURATION_LEVEL = 18000
 # Global log file paths for quality and saturation checks
 QUALITY_LOG_PATH = None
 SATURATION_LOG_PATH = None
+
+NUM_PROCESS = 10
 
 
 # 出力ディレクトリを作成・返すヘルパー
@@ -181,6 +184,13 @@ def do_average_noise(date_label: str):
     if not dst_dir.exists():
         logging.warning(f"Noise directory does not exist: {dst_dir}")
         return
+    
+    noise_list = list(noise_dir.glob("spec*CDS*.fits"))
+    pass_list, fail_list = quality_check(noise_list)
+    if not pass_list:
+        logging.warning(f"No noise files passed quality check in {dst_dir}")
+        return
+
 
     noise_list = list(dst_dir.glob("spec*CDS30.fits"))
     if not noise_list:
@@ -247,6 +257,10 @@ def do_average_noise(date_label: str):
 
                 if not target_path.exists():
                     logging.warning(f"Missing CDS{cds:02d} file corresponding to {fits_path.name}: {target_path.name}. skipping.")
+                    continue
+
+                if target_path in fail_list:
+                    logging.warning(f"File {target_path.name} failed quality check. skipping.")
                     continue
 
                 try:
@@ -377,7 +391,7 @@ def load_dark(fitspath):
     return data
 
 
-def do_remove_raw_dark_fits(date_label: str, object_name: str):
+def do_remove_raw_fits(date_label: str, object_name: str):
     target_dir = Path(RAWDATA_DIR) / object_name / date_label
     cmd = ["rm", "-f", str(target_dir / "spec*-????_CDS*.fits")]
     subprocess.run(" ".join(cmd), shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
@@ -456,7 +470,7 @@ def quality_check(fitslist: List[Path]):
             f.write(
                 f"# summary: total={len(fitslist)}, pass={len(pass_list)}, fail={len(fail_list)}\n"
             )
-    return pass_list
+    return pass_list, fail_list
 
 
 def gen_fitsdict(fitslist: List[Path]) -> Dict[str, List[Path]]:
@@ -725,7 +739,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     logging.info("Found %d raw FITS files before quality check.", len(raw_fitslist))
 
     n_before_quality = len(raw_fitslist)
-    raw_fitslist = quality_check(raw_fitslist)
+    raw_fitslist, _ = quality_check(raw_fitslist)
     logging.info(
         "Quality check result: %d -> %d files",
         n_before_quality,
@@ -822,6 +836,12 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     logging.info("==== End reduction: object=%s, date_label=%s ====", object_name, date_label)
 
 
+def worker_init() -> None:
+    """ProcessPoolExecutor 用の初期化関数。ワーカープロセスごとにロガーをクリアする。"""
+    root_logger = logging.getLogger()
+    root_logger.handlers.clear()
+
+
 if __name__ == "__main__":
     logging.basicConfig(
         level=logging.INFO,
@@ -843,11 +863,28 @@ if __name__ == "__main__":
     conn.close()
 
     for date_label, base_name_list in darkpath_dict.items():
-        do_scp_raw_fits(date_label, "noise", base_name_list)
         noise_dir = Path(f"{RAWDATA_DIR}/noise/{date_label}")
-        gunzip_if_needed(noise_dir, remove_gz=True)
-        do_average_noise(date_label)
-        do_remove_raw_dark_fits(date_label, "noise")
+        if not noise_dir.exists():
+            do_scp_raw_fits(date_label, "noise", base_name_list)
+            gunzip_if_needed(noise_dir, remove_gz=True)
+            do_average_noise(date_label)
+            do_remove_raw_fits(date_label, "noise")
     
-    for date_label, base_name_list in filepath_dict.items():
-        reduction_main(object_name, date_label, base_name_list)
+    with ProcessPoolExecutor(max_workers=NUM_PROCESS, initializer=worker_init) as ex:
+        future_to_job = {
+            ex.submit(reduction_main, object_name, date_label, base_name_list): (object_name, date_label, base_name_list)
+            for date_label, base_name_list in filepath_dict.items()
+        }
+        total = len(future_to_job)
+        done = 0
+        for future in as_completed(future_to_job):
+            object_name, date_label, base_name_list = future_to_job[future]
+            future.result()
+            done += 1
+            sys.stdout.write(f"[{done}/{total}] finished {object_name} {date_label}\n")
+            sys.stdout.flush()
+            future.result()
+
+    # for date_label, base_name_list in filepath_dict.items():
+    #     reduction_main(object_name, date_label, base_name_list)
+    #     do_remove_raw_fits(date_label, object_name)
