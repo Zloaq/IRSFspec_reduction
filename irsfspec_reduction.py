@@ -186,6 +186,7 @@ def do_average_noise(date_label: str):
     if not noise_list:
         logging.warning(f"No noize files found in {dst_dir}")
         return
+    logging.info("Noise averaging: found %d CDS30 frames in %s", len(noise_list), dst_dir)
 
     # EXP_TIME ごとにグループ分け
     groups = defaultdict(list)  # key: exptime (float), value: list[Path]
@@ -213,6 +214,7 @@ def do_average_noise(date_label: str):
     if not groups:
         logging.warning(f"No valid noise frames found in {dst_dir}")
         return
+    logging.info("Noise averaging: %d EXP_TIME groups", len(groups))
 
     # 各 EXP_TIME ごとに、CDS01〜CDS30 を平均化
     for exptime_val, file_list in groups.items():
@@ -220,6 +222,13 @@ def do_average_noise(date_label: str):
             continue
 
         exptime_str = exptime_to_str(exptime_val)
+        logging.info(
+            "Noise averaging: EXP_TIME=%s -> %d sequences (CDS01-30)",
+            exptime_str,
+            len(file_list),
+        )
+        created = 0
+        skipped = 0
 
         # file_list 内には同じ EXP_TIME の specYYMMDD-NNNN_CDS30.fits が並んでいる想定
         for cds in range(1, 31):  # CDS01〜CDS30
@@ -263,6 +272,16 @@ def do_average_noise(date_label: str):
                 logging.warning(
                     f"No valid frames to average for EXP_TIME={exptime_val}, CDS{cds:02d} in {dst_dir}. skipping."
                 )
+                skipped += 1
+                # 進捗は 5 枚ごとに出す（行が増えすぎないように）
+                if cds % 5 == 0:
+                    logging.info(
+                        "Noise averaging: EXP_TIME=%s progress %02d/30 (created=%d, skipped=%d)",
+                        exptime_str,
+                        cds,
+                        created,
+                        skipped,
+                    )
                 continue
 
             # 平均画像を作成
@@ -276,15 +295,22 @@ def do_average_noise(date_label: str):
             out_path = dst_dir / out_name
 
             fits.writeto(out_path, mean_image, header=header_ref, overwrite=True)
-            # logging.info(
-            #     "Created noise frame: %s (EXP_TIME=%s, CDS%02d, N=%d)",
-            #     out_path.name,
-            #     exptime_str,
-            #     cds,
-            #     len(data_stack),
-            # )
+            created += 1
+            if cds % 5 == 0:
+                logging.info(
+                    "Noise averaging: EXP_TIME=%s progress %02d/30 (created=%d, skipped=%d)",
+                    exptime_str,
+                    cds,
+                    created,
+                    skipped,
+                )
 
-    # 
+        logging.info(
+            "Noise averaging: EXP_TIME=%s done (created=%d, skipped=%d)",
+            exptime_str,
+            created,
+            skipped,
+        )
 
 
 def load_noise(date_label: str, exptime, cds: int | None = None):
