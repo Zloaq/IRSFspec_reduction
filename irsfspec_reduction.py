@@ -485,7 +485,20 @@ def quality_check(fitslist: List[Path]):
     per_file_logs: List[str] = []
 
     for fits_path in fitslist:
-        header, data = _load_fits(fits_path)
+        try:
+            with warnings.catch_warnings():
+                # 壊れた/途中で切れた FITS を確実に落とすため、AstropyWarning を例外化
+                warnings.simplefilter("error", AstropyWarning)
+                header, data = _load_fits(fits_path)
+        except (AstropyWarning, OSError, ValueError) as e:
+            logging.warning(
+                "quality_check: failed to read %s (%s); marking as NG",
+                fits_path.name,
+                e,
+            )
+            fail_list.append(fits_path)
+            per_file_logs.append(f"{fits_path.name},NG,NaN")
+            continue
         area = compute_area(data)
         if area > 0.0:
             # 読み出しエラーとして扱う
