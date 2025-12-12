@@ -412,18 +412,24 @@ def quality_check(fitslist: List[Path]):
                 area,
             )
             fail_list.append(fits_path)
-            per_file_logs.append(f"{fits_path.name}, NG, area={area:.6f}")
+            # ログファイルは CSV 風の 3 カラム: filename,status,area
+            per_file_logs.append(f"{fits_path.name},NG,{area:.6f}")
             continue
         pass_list.append(fits_path)
-        per_file_logs.append(f"{fits_path.name}, OK, area={area:.6f}")
+        per_file_logs.append(f"{fits_path.name},OK,{area:.6f}")
 
 
-    # Append summary to QUALITY_LOG_PATH if set
+    # QUALITY_LOG_PATH に CSV 風で出力
     if QUALITY_LOG_PATH is not None:
         with open(QUALITY_LOG_PATH, "w") as f:
+            # ヘッダ行
+            f.write("filename,status,area\n")
             for line in per_file_logs:
                 f.write(line + "\n")
-            f.write(f"quality_check summary: total={len(fitslist)}, pass={len(pass_list)}, fail={len(fail_list)}\n")
+            # サマリ行（コメント扱い）
+            f.write(
+                f"# summary: total={len(fitslist)}, pass={len(pass_list)}, fail={len(fail_list)}\n"
+            )
     return pass_list
 
 
@@ -531,7 +537,8 @@ def reject_saturation(fitslist: List[Path]):
             # スペクトル位置が特定できないフレームもゆるそう
             no_spec_list.append(fits_path)
             pass_fitslist.append(fits_path)
-            per_file_logs.append(f"{fits_path.name}, NO_SPEC")
+            # filename,status
+            per_file_logs.append(f"{fits_path.name},NO_SPEC")
             continue
 
         # スペクトル領域の画素値を取り出す
@@ -540,20 +547,23 @@ def reject_saturation(fitslist: List[Path]):
         # SATURATION_LEVEL 以下の値が 1 つでもあれば「飽和している」とみなして除外
         if np.any(spec_values <= SATURATION_LEVEL):
             saturated_list.append(fits_path)
-            per_file_logs.append(f"{fits_path.name}, SATURATED")
+            per_file_logs.append(f"{fits_path.name},SATURATED")
             continue
 
         # spec があって、飽和していないので採用
         pass_fitslist.append(fits_path)
-        per_file_logs.append(f"{fits_path.name}, OK")
+        per_file_logs.append(f"{fits_path.name},OK")
 
-    # Append summary to SATURATION_LOG_PATH if set
+    # SATURATION_LOG_PATH に CSV 風で出力
     if SATURATION_LOG_PATH is not None:
         with open(SATURATION_LOG_PATH, "w") as f:
+            # ヘッダ行
+            f.write("filename,status\n")
             for line in per_file_logs:
                 f.write(line + "\n")
+            # サマリ行（コメント扱い）
             f.write(
-                f"reject_saturation summary: total={len(fitslist)}, "
+                f"# summary: total={len(fitslist)}, "
                 f"pass={len(pass_fitslist)}, saturated={len(saturated_list)}, "
                 f"no_spec={len(no_spec_list)}\n"
             )
