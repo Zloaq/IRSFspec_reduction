@@ -7,6 +7,23 @@ import sqlite3
 import subprocess
 import logging
 import logging.handlers
+from pathlib import Path
+import re
+import glob
+import astropy.io.fits as fits
+import numpy as np
+from itertools import combinations
+from typing import Dict, List, Set, Tuple
+
+from tools import spec_locator
+from tools import classify_spec_location as csl
+
+from astropy.utils.exceptions import AstropyWarning
+from concurrent.futures import ProcessPoolExecutor, as_completed
+import warnings
+from collections import defaultdict
+import tempfile
+
 def setup_job_logger(outdir: Path, object_name: str, date_label: str) -> logging.Logger:
     """並列実行でもログが混ざらないよう、ジョブごとにファイルへ出力する。
 
@@ -29,22 +46,7 @@ def setup_job_logger(outdir: Path, object_name: str, date_label: str) -> logging
     fh.setFormatter(fmt)
     logger.addHandler(fh)
     return logger
-from pathlib import Path
-import re
-import glob
-import astropy.io.fits as fits
-import numpy as np
-from itertools import combinations
-from typing import Dict, List, Set, Tuple
 
-from tools import spec_locator
-from tools import classify_spec_location as csl
-
-from astropy.utils.exceptions import AstropyWarning
-from concurrent.futures import ProcessPoolExecutor, as_completed
-import warnings
-from collections import defaultdict
-import tempfile
 
 load_dotenv("config.env")
 
