@@ -415,7 +415,11 @@ def load_dark(fitspath):
 
     date_label = fitspath.parent.name
     header, _ = _load_fits(cds30_fitspath)
-    exptime = header["EXPTIME"]
+    exptime = header.get("EXPTIME", None)
+    
+    if exptime is None:
+        return None
+
     exptime_str = exptime_to_str(exptime)
 
     dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
