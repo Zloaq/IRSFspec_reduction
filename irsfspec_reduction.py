@@ -906,7 +906,8 @@ def worker_init() -> None:
 
 def main(object_name, date_label, base_name_list):
     reduction_main(object_name, date_label, base_name_list)
-    do_remove_raw_fits(date_label, object_name)
+    if remove_flag:
+        do_remove_raw_fits(date_label, object_name)
 
 
 if __name__ == "__main__":
@@ -922,9 +923,11 @@ if __name__ == "__main__":
     if len(sys.argv) == 3:
         object_name = sys.argv[1]
         date_label = sys.argv[2]
+        remove_flag = False
     elif len(sys.argv) == 2:
         object_name = sys.argv[1]
         date_label = None
+        remove_flag = True
     conn = sqlite3.connect(DB_PATH)
     filepath_dict = db_search(conn, object_name, date_label)
     darkpath_dict = db_search(conn, "dark", date_label)
