@@ -150,9 +150,10 @@ def gunzip_if_needed(directory: Path, remove_gz: bool = True):
 
         if remove_gz:
             gz_path.unlink()
-            logging.info(f"Decompressed and removed: {gz_path.name} -> {fits_path.name}")
+            #logging.info(f"Decompressed and removed: {gz_path.name} -> {fits_path.name}")
         else:
-            logging.info(f"Decompressed: {gz_path.name} -> {fits_path.name}")
+            #logging.info(f"Decompressed: {gz_path.name} -> {fits_path.name}")
+            pass
 
 
 def exptime_to_str(exptime_val) -> str:
@@ -275,13 +276,13 @@ def do_average_noise(date_label: str):
             out_path = dst_dir / out_name
 
             fits.writeto(out_path, mean_image, header=header_ref, overwrite=True)
-            logging.info(
-                "Created noise frame: %s (EXP_TIME=%s, CDS%02d, N=%d)",
-                out_path.name,
-                exptime_str,
-                cds,
-                len(data_stack),
-            )
+            # logging.info(
+            #     "Created noise frame: %s (EXP_TIME=%s, CDS%02d, N=%d)",
+            #     out_path.name,
+            #     exptime_str,
+            #     cds,
+            #     len(data_stack),
+            # )
 
     # 
 
