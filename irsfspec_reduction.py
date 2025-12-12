@@ -154,47 +154,25 @@ def gunzip_if_needed(directory: Path, remove_gz: bool = True):
         else:
             logging.info(f"Decompressed: {gz_path.name} -> {fits_path.name}")
 
-def group_consecutive_from_basenames(base_name_list: List[str]) -> List[Tuple[int, int]]:
+
+def exptime_to_str(exptime_val) -> str:
+    """EXP_TIME の値をファイル名用の文字列に変換する。
+
+    - 整数なら 2 桁ゼロ埋め ("05", "10" など)
+    - 少数なら小数点以下 3 桁までで末尾の 0 と小数点を削る
+    - ファイル名に使えるように小数点は "p" に置換 (10.5 -> "10p5")
     """
-    base_name_list から spec??????-NNNN.fits の NNNN を拾って、
-    連番のかたまりごとに (start, end) を返す。
+    try:
+        v = float(exptime_val)
+    except Exception:
+        # 数値にできなければそのまま str にする
+        return str(exptime_val)
 
-    例:
-      ["spec240101-0001.fits", "spec240101-0002.fits",
-       "spec240101-0005.fits", "spec240101-0006.fits"]
-    -> [(1, 2), (5, 6)]
-    """
-    nums = []
+    if v.is_integer():
+        return f"{int(v):02d}"
 
-    for bn in base_name_list:
-        m = re.match(r"spec(\d+)-(\d{4})\.fits$", bn)
-        if not m:
-            continue
-        num = int(m.group(2))
-        nums.append(num)
-
-    if not nums:
-        return []
-
-    nums = sorted(set(nums))
-
-    ranges: List[Tuple[int, int]] = []
-    start = prev = nums[0]
-
-    for n in nums[1:]:
-        if n == prev + 1:
-            # 連番継続
-            prev = n
-        else:
-            # ここまでの固まりを確定
-            ranges.append((start, prev))
-            start = prev = n
-
-    # 最後の固まりを追加
-    ranges.append((start, prev))
-
-    return ranges
-
+    s = f"{v:.3f}".rstrip("0").rstrip(".")
+    return s.replace(".", "p")
 
 
 def do_average_noise(date_label: str):
@@ -240,13 +218,7 @@ def do_average_noise(date_label: str):
         if not file_list:
             continue
 
-        try:
-            exptime_int = int(round(exptime_val))
-        except Exception:
-            # 念のため、変換に失敗したらそのまま文字列にして使う
-            exptime_str = str(exptime_val)
-        else:
-            exptime_str = f"{exptime_int:02d}"
+        exptime_str = exptime_to_str(exptime_val)
 
         # file_list 内には同じ EXP_TIME の specYYMMDD-NNNN_CDS30.fits が並んでいる想定
         for cds in range(1, 31):  # CDS01〜CDS30
@@ -314,41 +286,73 @@ def do_average_noise(date_label: str):
     # 
 
 
-def load_noise(date_label: str, exptime: int):
-    noise_path = Path(RAWDATA_DIR) / "noise" / date_label / f"noise{date_label}_{exptime:02d}.fits"
+def load_noise(date_label: str, exptime, cds: int | None = None):
+    """平均化済みノイズフレームを読み込むヘルパー。
+
+    date_label: 観測日付（YYMMDD など）
+    exptime: EXP_TIME / EXPTIME の値
+    cds: 読み出したい CDS 番号（None の場合は 30 をデフォルトとする）
+    """
+    exptime_str = exptime_to_str(exptime)
+    if cds is None:
+        cds = 30
+
+    noise_path = (
+        Path(RAWDATA_DIR)
+        / "noise"
+        / date_label
+        / f"noise{date_label}_{exptime_str}_CDS{cds:02d}.fits"
+    )
     if not noise_path.exists():
         logging.warning(f"Noise file does not exist: {noise_path}")
         return None
     with fits.open(noise_path, memmap=False) as hdul:
         header = hdul[0].header
         data = hdul[0].data.astype(np.float64)
-        
+
     return header, data
 
 
 def load_dark(fitspath):
+    """指定されたフレームに対応する平均ノイズ（dark）を読み込む。
+
+    - EXP_TIME は対応する CDS30 フレームから取得
+    - ノイズファイルは noise{date_label}_{exptime_str}_CDSxx.fits という命名に合わせる
+    """
     fitspath = Path(fitspath)
     if not fitspath.exists():
         raise FileNotFoundError(f"FITS not found: {fitspath}")
-    cds30_name = re.sub(r"CDS\d{2}\.fits", "CDS30.fits", fitspath)
-    date_label = fitspath.parent.name
+
+    # 元ファイル名から CDS 番号を取得
+    m = re.search(r"CDS(\d{2})\.fits$", fitspath.name)
+    if not m:
+        raise ValueError(f"Could not extract CDS number from filename: {fitspath.name}")
+    cds_num = int(m.group(1))
+
+    # EXP_TIME は同じ Num1 の CDS30 から取得する
+    cds30_name = re.sub(r"CDS\d{2}\.fits", "CDS30.fits", fitspath.name)
     cds30_fitspath = fitspath.with_name(cds30_name)
+
+    date_label = fitspath.parent.name
     header, _ = _load_fits(cds30_fitspath)
     exptime = header["EXPTIME"]
+    exptime_str = exptime_to_str(exptime)
+
     dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
-    noise_path = dst_dir / f"noise{date_label}_{exptime:02d}.fits"
+    noise_path = dst_dir / f"noise{date_label}_{exptime_str}_CDS{cds_num:02d}.fits"
     if not noise_path.exists():
         logging.warning(f"Noise file does not exist: {noise_path}")
         return None
+
     with fits.open(noise_path, memmap=False) as hdul:
         data = hdul[0].data.astype(np.float64)
-        
+
     return data
 
 
-def do_remove_raw_fits(date_label: str, object_name: str):
+def do_remove_raw_dark_fits(date_label: str, object_name: str):
     target_dir = Path(RAWDATA_DIR) / object_name / date_label
-    cmd = ["rm", "-f", str(target_dir / "spec*-????.fits")]
+    cmd = ["rm", "-f", str(target_dir / "spec*-????_CDS*.fits")]
     subprocess.run(" ".join(cmd), shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
 
@@ -464,7 +468,7 @@ def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     return result
 '''
 
-def classify_spec_location(fitsdict: Dict[str, List[Path]], date_label: str) -> Dict[str, str]:
+def classify_spec_location(fitsdict: Dict[str, List[Path]]) -> Dict[str, str]:
     """ 
     fitsdict: {number: [fits_path, ...]}
     各 number について、mask != None となる最初のファイルの中心位置を使う。
@@ -804,7 +808,7 @@ if __name__ == "__main__":
     for date_label, base_name_list in darkpath_dict.items():
         do_scp_raw_fits(date_label, "noise", base_name_list)
         do_average_noise(date_label)
-        do_remove_raw_fits(date_label, "noise")
+        do_remove_raw_dark_fits(date_label, "noise")
     
     for date_label, base_name_list in filepath_dict.items():
         reduction_main(object_name, date_label, base_name_list)
