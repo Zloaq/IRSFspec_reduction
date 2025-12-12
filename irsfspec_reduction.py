@@ -167,22 +167,12 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
                 stdout=subprocess.DEVNULL,
                 stderr=subprocess.DEVNULL,
             )
-        except subprocess.CalledProcessError as e:
+        except:
             logging.warning(
-                "scp failed (num1=%s) src=%s -> dst=%s (returncode=%s). continuing.",
+                "scp raised unexpected error (num1=%s) src=%s -> dst=%s. continuing.",
                 num1,
                 src,
                 dst,
-                getattr(e, "returncode", None),
-            )
-            continue
-        except Exception as e:
-            logging.warning(
-                "scp raised unexpected error (num1=%s) src=%s -> dst=%s (%s). continuing.",
-                num1,
-                src,
-                dst,
-                e,
             )
             continue
 
