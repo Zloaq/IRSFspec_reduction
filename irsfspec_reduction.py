@@ -65,7 +65,7 @@ SATURATION_LEVEL = 18000
 QUALITY_LOG_PATH = None
 SATURATION_LOG_PATH = None
 
-NUM_PROCESS = 10
+NUM_PROCESS = 3
 
 
 # 出力ディレクトリを作成・返すヘルパー
@@ -230,15 +230,14 @@ def do_average_noise(date_label: str):
         logging.warning(f"No noise files passed quality check in {dst_dir}")
         return
 
-
     noise_list = list(dst_dir.glob("spec*CDS30.fits"))
     if not noise_list:
         logging.warning(f"No noize files found in {dst_dir}")
         return
     logging.info("Noise averaging: found %d CDS30 frames in %s", len(noise_list), dst_dir)
 
-    # EXP_TIME ごとにグループ分け
-    groups = defaultdict(list)  # key: exptime (float), value: list[Path]
+    # EXP_TIME, IGA_MODE ごとにグループ分け
+    groups = defaultdict(list)  # key: (exptime_val, iga_mode_str), value: list[Path]
     for fits_path in noise_list:
         try:
             with warnings.catch_warnings():
@@ -247,7 +246,14 @@ def do_average_noise(date_label: str):
                 with fits.open(fits_path, memmap=False) as hdul:
                     hdr = hdul[0].header
                     exptime = hdr.get("EXP_TIME", None)
+                    iga_mode = hdr.get("IGA_MODE", None)
             exptime_val = float(exptime)
+            iga_mode_str = None
+            if iga_mode is not None:
+                iga_mode_str = re.sub(r"\s+", "", str(iga_mode).strip())
+                iga_mode_str = re.sub(r"[^0-9A-Za-z_\-]", "_", iga_mode_str)
+            else:
+                iga_mode_str = "None"
         except AstropyWarning as e:
             logging.warning(f"AstropyWarning while reading header from {fits_path}: {e}. skipping.")
             continue
@@ -258,28 +264,29 @@ def do_average_noise(date_label: str):
             logging.warning(f"failed to open {fits_path}: {e}. skipping.")
             continue
 
-        groups[exptime_val].append(fits_path)
+        groups[(exptime_val, iga_mode_str)].append(fits_path)
 
     if not groups:
         logging.warning(f"No valid noise frames found in {dst_dir}")
         return
-    logging.info("Noise averaging: %d EXP_TIME groups", len(groups))
+    logging.info("Noise averaging: %d EXP_TIME/IGA_MODE groups", len(groups))
 
-    # 各 EXP_TIME ごとに、CDS01〜CDS30 を平均化
-    for exptime_val, file_list in groups.items():
+    # 各 EXP_TIME/IGA_MODE ごとに、CDS01〜CDS30 を平均化
+    for (exptime_val, iga_mode_str), file_list in groups.items():
         if not file_list:
             continue
 
         exptime_str = exptime_to_str(exptime_val)
         logging.info(
-            "Noise averaging: EXP_TIME=%s -> %d sequences (CDS01-30)",
+            "Noise averaging: EXP_TIME=%s iga_mode=%s -> %d sequences (CDS01-30)",
             exptime_str,
+            iga_mode_str,
             len(file_list),
         )
         created = 0
         skipped = 0
 
-        # file_list 内には同じ EXP_TIME の specYYMMDD-NNNN_CDS30.fits が並んでいる想定
+        # file_list 内には同じ EXP_TIME/IGA_MODE の specYYMMDD-NNNN_CDS30.fits が並んでいる想定
         for cds in range(1, 31):  # CDS01〜CDS30
             data_stack = []
             header_ref = None
@@ -323,14 +330,15 @@ def do_average_noise(date_label: str):
 
             if not data_stack:
                 logging.warning(
-                    f"No valid frames to average for EXP_TIME={exptime_val}, CDS{cds:02d} in {dst_dir}. skipping."
+                    f"No valid frames to average for EXP_TIME={exptime_val}, IGA_MODE={iga_mode_str}, CDS{cds:02d} in {dst_dir}. skipping."
                 )
                 skipped += 1
                 # 進捗は 5 枚ごとに出す（行が増えすぎないように）
                 if cds % 5 == 0:
                     logging.info(
-                        "Noise averaging: EXP_TIME=%s progress %02d/30 (created=%d, skipped=%d)",
+                        "Noise averaging: EXP_TIME=%s iga_mode=%s progress %02d/30 (created=%d, skipped=%d)",
                         exptime_str,
+                        iga_mode_str,
                         cds,
                         created,
                         skipped,
@@ -344,23 +352,25 @@ def do_average_noise(date_label: str):
             if header_ref is None:
                 header_ref = fits.Header()
 
-            out_name = f"noise{date_label}_{exptime_str}_CDS{cds:02d}.fits"
+            out_name = f"noise{date_label}_{exptime_str}_{iga_mode_str}_CDS{cds:02d}.fits"
             out_path = dst_dir / out_name
 
             fits.writeto(out_path, mean_image, header=header_ref, overwrite=True)
             created += 1
             if cds % 5 == 0:
                 logging.info(
-                    "Noise averaging: EXP_TIME=%s progress %02d/30 (created=%d, skipped=%d)",
+                    "Noise averaging: EXP_TIME=%s iga_mode=%s progress %02d/30 (created=%d, skipped=%d)",
                     exptime_str,
+                    iga_mode_str,
                     cds,
                     created,
                     skipped,
                 )
 
         logging.info(
-            "Noise averaging: EXP_TIME=%s done (created=%d, skipped=%d)",
+            "Noise averaging: EXP_TIME=%s iga_mode=%s done (created=%d, skipped=%d)",
             exptime_str,
+            iga_mode_str,
             created,
             skipped,
         )
@@ -377,15 +387,15 @@ def load_noise(date_label: str, exptime, cds: int | None = None):
     if cds is None:
         cds = 30
 
-    noise_path = (
-        Path(RAWDATA_DIR)
-        / "noise"
-        / date_label
-        / f"noise{date_label}_{exptime_str}_CDS{cds:02d}.fits"
-    )
+    base_dir = Path(RAWDATA_DIR) / "noise" / date_label
+    noise_path = base_dir / f"noise{date_label}_{exptime_str}_CDS{cds:02d}.fits"
     if not noise_path.exists():
-        logging.warning(f"Noise file does not exist: {noise_path}")
-        return None
+        cand = sorted(base_dir.glob(f"noise{date_label}_{exptime_str}_*_CDS{cds:02d}.fits"))
+        if len(cand) == 1:
+            noise_path = cand[0]
+        else:
+            logging.warning(f"Noise file does not exist (or ambiguous): noise{date_label}_{exptime_str}_[IGA_MODE]_CDS{cds:02d}.fits")
+            return None
     with fits.open(noise_path, memmap=False) as hdul:
         header = hdul[0].header
         data = hdul[0].data.astype(np.float64)
@@ -423,10 +433,25 @@ def load_dark(fitspath):
     exptime_str = exptime_to_str(exptime)
 
     dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
-    noise_path = dst_dir / f"noise{date_label}_{exptime_str}_CDS{cds_num:02d}.fits"
-    if not noise_path.exists():
-        logging.warning(f"Noise file does not exist: {noise_path}")
-        return None
+
+    # IGA_MODE をファイル名に含めた新形式を優先
+    noise_path = None
+    iga_mode = header.get("IGA_MODE", None)
+    if iga_mode is not None:
+        iga_mode_str = re.sub(r"\s+", "", str(iga_mode).strip())
+        iga_mode_str = re.sub(r"[^0-9A-Za-z_\-]", "_", iga_mode_str)
+        cand = dst_dir / f"noise{date_label}_{exptime_str}_{iga_mode_str}_CDS{cds_num:02d}.fits"
+        if cand.exists():
+            noise_path = cand
+
+    # フォールバック: IGA_MODE不明または該当ファイルがない場合
+    if noise_path is None:
+        cand_list = sorted(dst_dir.glob(f"noise{date_label}_{exptime_str}_*_CDS{cds_num:02d}.fits"))
+        if len(cand_list) == 1:
+            noise_path = cand_list[0]
+        else:
+            logging.warning(f"Noise file does not exist: noise{date_label}_{exptime_str}_[IGA_MODE]_CDS{cds_num:02d}.fits")
+            return None
 
     with fits.open(noise_path, memmap=False) as hdul:
         data = hdul[0].data.astype(np.float64)
