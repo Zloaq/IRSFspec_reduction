@@ -23,6 +23,8 @@ from concurrent.futures import ProcessPoolExecutor, as_completed
 import warnings
 from collections import defaultdict
 import tempfile
+import gzip
+import shutil
 
 def setup_job_logger(outdir: Path, object_name: str, date_label: str) -> logging.Logger:
     """並列実行でもログが混ざらないよう、ジョブごとにファイルへ出力する。
@@ -175,9 +177,6 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
                 dst,
             )
             continue
-
-import gzip
-import shutil
 
 def gunzip_if_needed(directory: Path, remove_gz: bool = True):
     """directory 内の *.fits.gz を解凍し、.fits を生成する。"""
@@ -564,6 +563,143 @@ def gen_fitsdict(fitslist: List[Path]) -> Dict[str, List[Path]]:
     return sorted_fitsdict
 
 
+# --- Diagnostic helpers for per-date CDS gap selection and saving diagnostic images ---
+
+def _cds_num_from_name(name: str) -> int | None:
+    m = re.search(r"CDS(\d{2})\.fits$", name)
+    if not m:
+        return None
+    return int(m.group(1))
+
+
+def _cds_map_for_group(fitslist: List[Path]) -> Dict[int, Path]:
+    m: Dict[int, Path] = {}
+    for p in fitslist:
+        cds = _cds_num_from_name(p.name)
+        if cds is None:
+            continue
+        m[cds] = p
+    return m
+
+
+def choose_diagnostic_gap_for_date(
+    fitsdict: Dict[str, List[Path]],
+    min_coverage: float = 0.8,
+    max_gap: int = 29,
+) -> int:
+    """日付内で、できるだけ長い積分(=CDS差分)を優先しつつ、揃うgapを選ぶ。
+
+    - gap を大きい順に見て、(gapが作れるNum1数 / 全Num1数) >= min_coverage を満たす最初の gap
+    - それが無ければ、作れるNum1数が最大になる gap（同点なら gap が大きい方）
+    """
+    groups = list(fitsdict.values())
+    n = len(groups)
+    if n == 0:
+        return 28
+
+    best_gap = 1
+    best_count = -1
+
+    for gap in range(max_gap, 0, -1):
+        cnt = 0
+        for fitslist in groups:
+            cds_map = _cds_map_for_group(fitslist)
+            cds_set = set(cds_map.keys())
+            ok = False
+            for hi in range(30, 0, -1):
+                lo = hi - gap
+                if lo <= 0:
+                    continue
+                if hi in cds_set and lo in cds_set:
+                    ok = True
+                    break
+            if ok:
+                cnt += 1
+
+        if cnt > best_count or (cnt == best_count and gap > best_gap):
+            best_count = cnt
+            best_gap = gap
+
+        if (cnt / n) >= min_coverage:
+            return gap
+
+    return best_gap
+
+
+def _pick_pair_for_gap(cds_map: Dict[int, Path], gap: int) -> Tuple[int, int] | None:
+    cds_set = set(cds_map.keys())
+    for hi in range(30, 0, -1):
+        lo = hi - gap
+        if lo <= 0:
+            continue
+        if hi in cds_set and lo in cds_set:
+            return hi, lo
+    return None
+
+
+def _gzip_file(path: Path) -> Path:
+    gz_path = Path(str(path) + ".gz")
+    with open(path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
+        shutil.copyfileobj(f_in, f_out)
+    path.unlink()
+    return gz_path
+
+
+def save_diagnostic_cds_images_for_date(
+    fitsdict: Dict[str, List[Path]],
+    outdir: Path,
+    min_coverage: float = 0.8,
+    fallback: bool = True,
+) -> Tuple[int, int, int]:
+    """Num1ごとに診断用のCDS差分画像を1枚だけ保存する（A/Bグループ分けとは独立）。
+
+    方針:
+    - まず日付内で揃う gap を choose_diagnostic_gap_for_date で決める
+    - 各Num1でその gap のペア(hi,lo)を探して1枚作る
+    - その gap が作れない場合、fallback=Trueなら作れる最大gapで1枚作る
+
+    Returns: (chosen_gap, created_count, skipped_count)
+    """
+    diagdir = Path(outdir) / "diagnostic"
+    diagdir.mkdir(parents=True, exist_ok=True)
+
+    chosen_gap = choose_diagnostic_gap_for_date(fitsdict, min_coverage=min_coverage)
+
+    created = 0
+    skipped = 0
+
+    for num1, fitslist in fitsdict.items():
+        cds_map = _cds_map_for_group(fitslist)
+        pair = _pick_pair_for_gap(cds_map, chosen_gap)
+
+        used_gap = chosen_gap
+        if pair is None and fallback:
+            for g in range(29, 0, -1):
+                pair = _pick_pair_for_gap(cds_map, g)
+                if pair is not None:
+                    used_gap = g
+                    break
+
+        if pair is None:
+            skipped += 1
+            continue
+
+        hi, lo = pair
+        extra = {
+            "DIAG": True,
+            "DIAGNUM": num1,
+            "CDS_HI": hi,
+            "CDS_LO": lo,
+            "CDS_GAP": used_gap,
+            "DIAGPOL": "CDS",
+        }
+        p = create_CDS_image(cds_map[hi], cds_map[lo], diagdir, extra_header=extra)
+        _gzip_file(p)
+        created += 1
+
+    return chosen_gap, created, skipped
+
+
 '''
 def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
     """
@@ -743,7 +879,7 @@ def search_combination_for_set_AB(fitslist1: List[Path], fitslist2: List[Path]):
     return idx1_min, idx2_min, idx1_max, idx2_max
 
 
-def create_CDS_image(fitspath1: Path, fitspath2: Path, savepath: Path) -> Path:
+def create_CDS_image(fitspath1: Path, fitspath2: Path, savepath: Path, extra_header: dict | None = None) -> Path:
     fitspath1 = Path(fitspath1)
     fitspath2 = Path(fitspath2)
     savepath = Path(savepath)
@@ -765,6 +901,9 @@ def create_CDS_image(fitspath1: Path, fitspath2: Path, savepath: Path) -> Path:
         header, _ = _load_fits(cds30_fitspath)
 
     image = fits1 - fits2
+    if extra_header:
+        for k, v in extra_header.items():
+            header[k] = v
     fits.writeto(new_fitspath, image, header=header, overwrite=True)
     return new_fitspath
 
@@ -841,6 +980,20 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
 
     fitsdict = gen_fitsdict(raw_fitslist)
     logger.info("Number of Num1 groups after quality check: %d", len(fitsdict))
+
+    # --- Diagnostic: save one CDS-difference image per Num1 (independent of A/B grouping) ---
+    diag_gap, diag_created, diag_skipped = save_diagnostic_cds_images_for_date(
+        fitsdict,
+        outdir,
+        min_coverage=0.8,
+        fallback=True,
+    )
+    logger.info(
+        "Diagnostic CDS images: chosen_gap=%d created=%d skipped=%d",
+        diag_gap,
+        diag_created,
+        diag_skipped,
+    )
 
     label_dict = classify_spec_location(fitsdict)
     if label_dict is None:
