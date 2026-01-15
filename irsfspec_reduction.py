@@ -666,6 +666,7 @@ def reject_saturation(fitslist: List[Path]):
         spec_values = data[mask]
 
         # SATURATION_LEVEL 以下の値が 200 pix 以上あれば「飽和している」とみなして除外
+        # マジックナンバーごめんなさい
         if np.count_nonzero(spec_values <= SATURATION_LEVEL) >= 200:
             saturated_list.append(fits_path)
             per_file_logs.append(f"{fits_path.name},SATURATED")
@@ -850,7 +851,7 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         )
         return
     logger.info("Classified spectrum locations for %d groups.", len(label_dict))
-    
+
     if len(label_dict) == 1:
         logger.warning(
             "Only one group for object=%s, date_label=%s; skipping.",
@@ -859,17 +860,44 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         )
         return
 
+    # ペア探索は飽和除外より先に行う（飽和フレームでも像がはっきりしていて位置推定に有利なことがある）
     pair_label_list = search_combination_with_diff_label(label_dict)
     logger.info("Found %d AB pairs with different labels.", len(pair_label_list))
 
+    # ---- Saturation rejection: run once per Num1 group (avoid repeating per pair) ----
+    n_groups_before_sat = len(fitsdict)
+    removed_groups = 0
+    total_frames_before = sum(len(v) for v in fitsdict.values())
+
+    for no in list(fitsdict.keys()):
+        fitsdict[no] = reject_saturation(fitsdict[no])
+        if not fitsdict[no]:
+            # 飽和除外で空になったグループも、ペア探索自体は維持するためキーは残す（後段でスキップ）
+            removed_groups += 1
+
+    total_frames_after = sum(len(v) for v in fitsdict.values())
+    logger.info(
+        "Saturation rejection (per-group): groups %d -> %d (removed=%d), frames %d -> %d",
+        n_groups_before_sat,
+        len(fitsdict),
+        removed_groups,
+        total_frames_before,
+        total_frames_after,
+    )
+
+    # 全グループが空になった場合はここで終了
+    if sum(len(v) for v in fitsdict.values()) == 0:
+        logger.warning(
+            "No usable frames remain for object=%s, date_label=%s after saturation rejection; skipping.",
+            object_name,
+            date_label,
+        )
+        return
+
     for no1, no2 in pair_label_list:
         logger.info("== Processing pair: No %s (group1) and No %s (group2)", no1, no2)
-        fitslist1 = fitsdict[no1]
-        fitslist2 = fitsdict[no2]
-
-        # 飽和フレームを除外
-        fitslist1 = reject_saturation(fitslist1)
-        fitslist2 = reject_saturation(fitslist2)
+        fitslist1 = fitsdict.get(no1, [])
+        fitslist2 = fitsdict.get(no2, [])
 
         logger.info(
             "After saturation rejection: No %s -> %d frames, No %s -> %d frames",
