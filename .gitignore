@@ -2,6 +2,7 @@
 *.db
 *.fits
 update_github.sh
+rsync_5min.sh
 
 # ローカルテスト用ディレクトリ
 local_test/

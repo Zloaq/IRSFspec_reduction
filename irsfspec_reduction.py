@@ -692,7 +692,7 @@ def save_diagnostic_cds_images_for_date(
             "CDS_GAP": used_gap,
             "DIAGPOL": "CDS",
         }
-        p = create_CDS_image(cds_map[hi], cds_map[lo], diagdir, extra_header=extra)
+        p = create_CDS_image(cds_map[lo], cds_map[hi], diagdir, extra_header=extra)
         new_name = "_" + p.name
         new_path = p.with_name(new_name)
         p.rename(new_path)
