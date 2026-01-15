@@ -981,9 +981,40 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
     fitsdict = gen_fitsdict(raw_fitslist)
     logger.info("Number of Num1 groups after quality check: %d", len(fitsdict))
 
-    # --- Diagnostic: save one CDS-difference image per Num1 (independent of A/B grouping) ---
+    # ---- Saturation rejection: run once per Num1 group and reuse downstream ----
+    n_groups_before_sat = len(fitsdict)
+    total_frames_before = sum(len(v) for v in fitsdict.values())
+
+    sat_fitsdict: Dict[str, List[Path]] = {}
+    removed_groups = 0
+    for no, flist in fitsdict.items():
+        passed = reject_saturation(list(flist))
+        sat_fitsdict[no] = passed
+        if not passed:
+            removed_groups += 1
+
+    total_frames_after = sum(len(v) for v in sat_fitsdict.values())
+    logger.info(
+        "Saturation rejection (per-group): groups %d -> %d (removed=%d), frames %d -> %d",
+        n_groups_before_sat,
+        len(sat_fitsdict),
+        removed_groups,
+        total_frames_before,
+        total_frames_after,
+    )
+
+    # 全グループが空になった場合はここで終了
+    if total_frames_after == 0:
+        logger.warning(
+            "No usable frames remain for object=%s, date_label=%s after saturation rejection; skipping.",
+            object_name,
+            date_label,
+        )
+        return
+
+    # --- Diagnostic: save one CDS-difference image per Num1 (after saturation rejection) ---
     diag_gap, diag_created, diag_skipped = save_diagnostic_cds_images_for_date(
-        fitsdict,
+        sat_fitsdict,
         outdir,
         min_coverage=0.8,
         fallback=True,
@@ -995,7 +1026,8 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         diag_skipped,
     )
 
-    label_dict = classify_spec_location(fitsdict)
+    # Classification uses post-saturation frames for simplicity
+    label_dict = classify_spec_location(sat_fitsdict)
     if label_dict is None:
         logger.warning(
             "No usable raw FITS files for object=%s, date_label=%s after classification; skipping.",
@@ -1013,44 +1045,14 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
         )
         return
 
-    # ペア探索は飽和除外より先に行う（飽和フレームでも像がはっきりしていて位置推定に有利なことがある）
+    # ペア探索（分類結果に基づく）
     pair_label_list = search_combination_with_diff_label(label_dict)
     logger.info("Found %d AB pairs with different labels.", len(pair_label_list))
 
-    # ---- Saturation rejection: run once per Num1 group (avoid repeating per pair) ----
-    n_groups_before_sat = len(fitsdict)
-    removed_groups = 0
-    total_frames_before = sum(len(v) for v in fitsdict.values())
-
-    for no in list(fitsdict.keys()):
-        fitsdict[no] = reject_saturation(fitsdict[no])
-        if not fitsdict[no]:
-            # 飽和除外で空になったグループも、ペア探索自体は維持するためキーは残す（後段でスキップ）
-            removed_groups += 1
-
-    total_frames_after = sum(len(v) for v in fitsdict.values())
-    logger.info(
-        "Saturation rejection (per-group): groups %d -> %d (removed=%d), frames %d -> %d",
-        n_groups_before_sat,
-        len(fitsdict),
-        removed_groups,
-        total_frames_before,
-        total_frames_after,
-    )
-
-    # 全グループが空になった場合はここで終了
-    if sum(len(v) for v in fitsdict.values()) == 0:
-        logger.warning(
-            "No usable frames remain for object=%s, date_label=%s after saturation rejection; skipping.",
-            object_name,
-            date_label,
-        )
-        return
-
     for no1, no2 in pair_label_list:
         logger.info("== Processing pair: No %s (group1) and No %s (group2)", no1, no2)
-        fitslist1 = fitsdict.get(no1, [])
-        fitslist2 = fitsdict.get(no2, [])
+        fitslist1 = sat_fitsdict.get(no1, [])
+        fitslist2 = sat_fitsdict.get(no2, [])
 
         logger.info(
             "After saturation rejection: No %s -> %d frames, No %s -> %d frames",
