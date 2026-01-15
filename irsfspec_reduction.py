@@ -675,11 +675,13 @@ def reject_saturation(fitslist: List[Path]):
         pass_fitslist.append(fits_path)
         per_file_logs.append(f"{fits_path.name},OK")
 
-    # SATURATION_LOG_PATH に CSV 風で出力
+    # SATURATION_LOG_PATH に CSV 風で追記（呼び出しごとに積み上げる）
     if SATURATION_LOG_PATH is not None:
-        with open(SATURATION_LOG_PATH, "w") as f:
-            # ヘッダ行
-            f.write("filename,status\n")
+        log_path = Path(SATURATION_LOG_PATH)
+        need_header = (not log_path.exists()) or (log_path.stat().st_size == 0)
+        with open(log_path, "a") as f:
+            if need_header:
+                f.write("filename,status\n")
             for line in per_file_logs:
                 f.write(line + "\n")
             # サマリ行（コメント扱い）
