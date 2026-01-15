@@ -660,8 +660,7 @@ def save_diagnostic_cds_images_for_date(
 
     Returns: (chosen_gap, created_count, skipped_count)
     """
-    diagdir = Path(outdir) / "diagnostic"
-    diagdir.mkdir(parents=True, exist_ok=True)
+    diagdir = Path(outdir)
 
     chosen_gap = choose_diagnostic_gap_for_date(fitsdict, min_coverage=min_coverage)
 
@@ -694,7 +693,9 @@ def save_diagnostic_cds_images_for_date(
             "DIAGPOL": "CDS",
         }
         p = create_CDS_image(cds_map[hi], cds_map[lo], diagdir, extra_header=extra)
-        _gzip_file(p)
+        new_name = "_" + p.name
+        new_path = p.with_name(new_name)
+        p.rename(new_path)
         created += 1
 
     return chosen_gap, created, skipped
