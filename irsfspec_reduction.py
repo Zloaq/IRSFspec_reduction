@@ -665,8 +665,8 @@ def reject_saturation(fitslist: List[Path]):
         # スペクトル領域の画素値を取り出す
         spec_values = data[mask]
 
-        # SATURATION_LEVEL 以下の値が 1 つでもあれば「飽和している」とみなして除外
-        if np.any(spec_values <= SATURATION_LEVEL):
+        # SATURATION_LEVEL 以下の値が 200 pix 以上あれば「飽和している」とみなして除外
+        if np.count_nonzero(spec_values <= SATURATION_LEVEL) >= 200:
             saturated_list.append(fits_path)
             per_file_logs.append(f"{fits_path.name},SATURATED")
             continue
