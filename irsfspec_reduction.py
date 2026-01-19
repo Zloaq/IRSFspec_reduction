@@ -787,8 +787,14 @@ def reject_saturation(fitslist: List[Path]):
     saturated_list: List[Path] = []
     no_spec_list: List[Path] = []
     per_file_logs: List[str] = []
+    saturated_after = False
 
     for fits_path in fitslist:
+        if saturated_after:
+            # 一度飽和が出たら、それ以降はすべて SATURATED として除外
+            saturated_list.append(fits_path)
+            per_file_logs.append(f"{fits_path.name},SATURATED")
+            continue
         header, data = _load_fits(fits_path)
         mask = spec_locator.spec_locator(data)
         if mask is None:
@@ -807,6 +813,7 @@ def reject_saturation(fitslist: List[Path]):
         if np.count_nonzero(spec_values <= SATURATION_LEVEL) >= 200:
             saturated_list.append(fits_path)
             per_file_logs.append(f"{fits_path.name},SATURATED")
+            saturated_after = True
             continue
 
         # spec があって、飽和していないので採用
