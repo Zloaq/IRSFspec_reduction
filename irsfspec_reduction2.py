@@ -16,7 +16,6 @@ from itertools import combinations
 from typing import Dict, List, Set, Tuple
 
 from tools import spec_locator
-from tools import classify_spec_location as csl
 
 from astropy.utils.exceptions import AstropyWarning
 from concurrent.futures import ProcessPoolExecutor, as_completed
@@ -67,7 +66,7 @@ SATURATION_LEVEL = 18000
 QUALITY_LOG_PATH = None
 SATURATION_LOG_PATH = None
 
-NUM_PROCESS = 3
+NUM_PROCESS = 15
 
 
 # 出力ディレクトリを作成・返すヘルパー
@@ -513,7 +512,7 @@ def quality_check(fitslist: List[Path]):
             with warnings.catch_warnings():
                 # 壊れた/途中で切れた FITS を確実に落とすため、AstropyWarning を例外化
                 warnings.simplefilter("error", AstropyWarning)
-                _, data = _load_fits(fits_path)
+                header, data = _load_fits(fits_path)
         except (AstropyWarning, OSError, ValueError) as e:
             logging.warning(
                 "quality_check: failed to read %s (%s); marking as NG",
@@ -523,18 +522,7 @@ def quality_check(fitslist: List[Path]):
             fail_list.append(fits_path)
             per_file_logs.append(f"{fits_path.name},NG,NaN")
             continue
-        mask = spec_locator.spec_locator(data)
-        if mask is None or np.count_nonzero(mask) == 0:
-            logging.warning(
-                "quality_check: failed to detect spectrum mask in %s; marking as NG",
-                fits_path.name,
-            )
-            fail_list.append(fits_path)
-            per_file_logs.append(f"{fits_path.name},NG,NaN")
-            continue
-
-        # エラー判定は画像全体ではなく、スペクトル領域のみで行う
-        area = compute_area(data[mask])
+        area = compute_area(data)
         if area > 0.0:
             # 読み出しエラーとして扱う
             logging.warning(
@@ -574,222 +562,32 @@ def gen_fitsdict(fitslist: List[Path]) -> Dict[str, List[Path]]:
     return sorted_fitsdict
 
 
-# --- Diagnostic helpers for per-date CDS gap selection and saving diagnostic images ---
 
-def _cds_num_from_name(name: str) -> int | None:
-    m = re.search(r"CDS(\d{2})\.fits$", name)
-    if not m:
-        return None
-    return int(m.group(1))
-
-
-def _cds_map_for_group(fitslist: List[Path]) -> Dict[int, Path]:
-    m: Dict[int, Path] = {}
-    for p in fitslist:
-        cds = _cds_num_from_name(p.name)
-        if cds is None:
-            continue
-        m[cds] = p
-    return m
-
-
-def choose_diagnostic_gap_for_date(
-    fitsdict: Dict[str, List[Path]],
-    min_coverage: float = 0.8,
-    max_gap: int = 29,
-) -> int:
-    """日付内で、できるだけ長い積分(=CDS差分)を優先しつつ、揃うgapを選ぶ。
-
-    - gap を大きい順に見て、(gapが作れるNum1数 / 全Num1数) >= min_coverage を満たす最初の gap
-    - それが無ければ、作れるNum1数が最大になる gap（同点なら gap が大きい方）
+def classify_spec_location(fitsdict: Dict[str, List[Path]]) -> Dict[str, str] | None:
     """
-    groups = list(fitsdict.values())
-    n = len(groups)
+    Num1 を前半/後半に分類する。
+    奇数の場合、真ん中の Num1 は両方に属する（ラベル "AB"）。
+    """
+    if not fitsdict:
+        return None
+
+    num1_list = sorted(fitsdict.keys(), key=int)
+    n = len(num1_list)
     if n == 0:
-        return 28
-
-    best_gap = 1
-    best_count = -1
-
-    for gap in range(max_gap, 0, -1):
-        cnt = 0
-        for fitslist in groups:
-            cds_map = _cds_map_for_group(fitslist)
-            cds_set = set(cds_map.keys())
-            ok = False
-            for hi in range(30, 0, -1):
-                lo = hi - gap
-                if lo <= 0:
-                    continue
-                if hi in cds_set and lo in cds_set:
-                    ok = True
-                    break
-            if ok:
-                cnt += 1
-
-        if cnt > best_count or (cnt == best_count and gap > best_gap):
-            best_count = cnt
-            best_gap = gap
-
-        if (cnt / n) >= min_coverage:
-            return gap
-
-    return best_gap
-
-
-def _pick_pair_for_gap(cds_map: Dict[int, Path], gap: int) -> Tuple[int, int] | None:
-    cds_set = set(cds_map.keys())
-    for hi in range(30, 0, -1):
-        lo = hi - gap
-        if lo <= 0:
-            continue
-        if hi in cds_set and lo in cds_set:
-            return hi, lo
-    return None
-
-
-def _gzip_file(path: Path) -> Path:
-    gz_path = Path(str(path) + ".gz")
-    with open(path, "rb") as f_in, gzip.open(gz_path, "wb") as f_out:
-        shutil.copyfileobj(f_in, f_out)
-    path.unlink()
-    return gz_path
-
-
-def save_diagnostic_cds_images_for_date(
-    fitsdict: Dict[str, List[Path]],
-    outdir: Path,
-    min_coverage: float = 0.8,
-    fallback: bool = True,
-) -> Tuple[int, int, int]:
-    """Num1ごとに診断用のCDS差分画像を1枚だけ保存する（A/Bグループ分けとは独立）。
-
-    方針:
-    - まず日付内で揃う gap を choose_diagnostic_gap_for_date で決める
-    - 各Num1でその gap のペア(hi,lo)を探して1枚作る
-    - その gap が作れない場合、fallback=Trueなら作れる最大gapで1枚作る
-
-    Returns: (chosen_gap, created_count, skipped_count)
-    """
-    diagdir = Path(outdir)
-
-    chosen_gap = choose_diagnostic_gap_for_date(fitsdict, min_coverage=min_coverage)
-
-    created = 0
-    skipped = 0
-
-    for num1, fitslist in fitsdict.items():
-        cds_map = _cds_map_for_group(fitslist)
-        pair = _pick_pair_for_gap(cds_map, chosen_gap)
-
-        used_gap = chosen_gap
-        if pair is None and fallback:
-            for g in range(29, 0, -1):
-                pair = _pick_pair_for_gap(cds_map, g)
-                if pair is not None:
-                    used_gap = g
-                    break
-
-        if pair is None:
-            skipped += 1
-            continue
-
-        hi, lo = pair
-        extra = {
-            "DIAG": True,
-            "DIAGNUM": num1,
-            "CDS_HI": hi,
-            "CDS_LO": lo,
-            "CDS_GAP": used_gap,
-            "DIAGPOL": "CDS",
-        }
-        p = create_CDS_image(cds_map[lo], cds_map[hi], diagdir, extra_header=extra)
-        new_name = "_" + p.name
-        new_path = p.with_name(new_name)
-        p.rename(new_path)
-        created += 1
-
-    return chosen_gap, created, skipped
-
-
-'''
-def classify_spec_location(fitsdict: Dict[str, List[str]]) -> Dict[str, str]:
-    """
-    fitsdict: {number: [fits_path, ...]}
-    それぞれのfitsについて mask の True を包含する最小矩形を求め、
-    その矩形の中心を計算する。
-    Returns: {No: label}
-    """
-    result: Dict[str, Dict[str, object]] = {}
-
-    for number, fitslist in fitsdict.items():
-        centers: Dict[str, int] = {}
-        files: List[str] = []
-        fitslist.sort()
-        for fits_path in fitslist[::-1]:
-            header, data = _load_fits(fits_path)
-            darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
-            _, dark = _load_fits(darkpath)
-            image = data - dark
-            mask = spec_locator.spec_locator(image)
-            if mask is None:
-                continue
-        if mask is None:
-            center_y = None
-        else:
-            center_y = csl.vertical_center_from_mask(mask)
-        centers[number] = center_y
-    result = csl.classify_spec_location(centers)
-
-    return result
-'''
-
-def classify_spec_location(fitsdict: Dict[str, List[Path]]) -> Dict[str, str]:
-    """ 
-    fitsdict: {number: [fits_path, ...]}
-    各 number について、mask != None となる最初のファイルの中心位置を使う。
-    Returns: {No: label}
-    """
-    centers: Dict[str, float] = {}
-
-    for number, fitslist in fitsdict.items():
-        # CDS 番号の大きい順など、元の意図に合わせて並べ替え
-        fitslist_sorted = sorted(fitslist, reverse=True)
-
-        center_y = None
-        mask = None
-
-        for fits_path in fitslist_sorted:
-
-            header, data = _load_fits(fits_path)
-            dark = load_dark(fits_path)
-            if dark is None:
-                darkpath = find_dark(fits_path, DARK4LOCATE_DIR)
-                _, dark = _load_fits(darkpath)
-
-
-            image = data - dark
-            mask = spec_locator.spec_locator(image)
-            if mask is None:
-                # このファイルではスペクトルが見つからなかった → 次のファイルへ
-                continue
-            # 最初に見つかった mask を採用してループを抜ける
-            center_y = csl.vertical_center_from_mask(mask)
-            break
-
-        if mask is None:
-            # その番号の全ファイルで mask が見つからなかった → スキップ
-            logging.warning(f"spec_locator failed for all files of No {number}; skipping.")
-            continue
-
-        centers[number] = center_y
-
-    if not centers:
         return None
 
-    # ここでようやく tools.classify_spec_location に渡す
-    result = csl.classify_spec_location(centers)
-    return result
+    label_dict: Dict[str, str] = {}
+    mid = n // 2
+
+    for i, num1 in enumerate(num1_list):
+        if n % 2 == 1 and i == mid:
+            label_dict[num1] = "AB"
+        elif i < mid:
+            label_dict[num1] = "A"
+        else:
+            label_dict[num1] = "B"
+
+    return label_dict
 
 
 def reject_saturation(fitslist: List[Path]):
@@ -806,18 +604,23 @@ def reject_saturation(fitslist: List[Path]):
             saturated_list.append(fits_path)
             per_file_logs.append(f"{fits_path.name},SATURATED")
             continue
-        header, data = _load_fits(fits_path)
-        mask = spec_locator.spec_locator(data)
-        if mask is None:
-            # スペクトル位置が特定できないフレームもゆるそう
+        _, data = _load_fits(fits_path)
+        cfg = spec_locator.DEFAULT_CONFIG
+        h, w = data.shape
+        Y, X = np.ogrid[:h, :w]
+        l1 = cfg.band_a1 * X + cfg.band_b1
+        l2 = cfg.band_a2 * X + cfg.band_b2
+        lower = np.minimum(l1, l2)
+        upper = np.maximum(l1, l2)
+        band_mask = (Y >= lower) & (Y <= upper)
+
+        # 帯域内だけを使って飽和判定する
+        spec_values = data[band_mask]
+        if spec_values.size == 0:
             no_spec_list.append(fits_path)
             pass_fitslist.append(fits_path)
-            # filename,status
             per_file_logs.append(f"{fits_path.name},NO_SPEC")
             continue
-
-        # スペクトル領域の画素値を取り出す
-        spec_values = data[mask]
 
         # SATURATION_LEVEL 以下の値が 200 pix 以上あれば「飽和している」とみなして除外
         # マジックナンバーごめんなさい
@@ -858,8 +661,11 @@ def search_combination_with_diff_label(
     results: List[Tuple[str, str]] = []
 
     for no1, no2 in combinations(sorted(label_dict.keys()), 2):
-        # ラベルが同じならスキップ
-        if label_dict[no1] == label_dict[no2]:
+        label1 = label_dict[no1]
+        label2 = label_dict[no2]
+        if label1 == label2 and label1 in ("A", "B"):
+            continue
+        if label1 == "AB" and label2 == "AB":
             continue
         results.append((no1, no2))
 
@@ -1030,20 +836,6 @@ def reduction_main(object_name: str, date_label: str, base_name_list: List[str])
             date_label,
         )
         return
-
-    # --- Diagnostic: save one CDS-difference image per Num1 (after saturation rejection) ---
-    diag_gap, diag_created, diag_skipped = save_diagnostic_cds_images_for_date(
-        sat_fitsdict,
-        outdir,
-        min_coverage=0.8,
-        fallback=True,
-    )
-    logger.info(
-        "Diagnostic CDS images: chosen_gap=%d created=%d skipped=%d",
-        diag_gap,
-        diag_created,
-        diag_skipped,
-    )
 
     # Classification uses post-saturation frames for simplicity
     label_dict = classify_spec_location(sat_fitsdict)
