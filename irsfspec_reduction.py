@@ -220,7 +220,6 @@ def exptime_to_str(exptime_val) -> str:
 def do_average_noise(date_label: str):
     dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
     if not dst_dir.exists():
-        logging.warning(f"Noise directory does not exist: {dst_dir}")
         return
     
     noise_list = list(noise_dir.glob("spec*CDS*.fits"))
