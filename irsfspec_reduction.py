@@ -1217,7 +1217,7 @@ if __name__ == "__main__":
     for date_label, base_name_list in darkpath_dict.items():
         noise_dir = get_noise_root_dir() / date_label
         if not noise_dir.exists():
-            logging.warning("Noise directory does not exist (skip noise averaging): %s", noise_dir)
+            continue
         else:
             gunzip_if_needed(noise_dir, remove_gz=True)
             do_average_noise(date_label)
