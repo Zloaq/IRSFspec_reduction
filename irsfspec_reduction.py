@@ -26,6 +26,26 @@ import tempfile
 import gzip
 import shutil
 
+REPO_ROOT = Path(__file__).resolve().parent
+
+
+def _resolve_env_path(value: str | None) -> Path | None:
+    """環境変数のパスを解決する。
+
+    - 未設定なら None
+    - `config.env` 内の環境変数参照（`${VAR}` / `$VAR`）を展開
+    - 絶対パスならそのまま
+    - 相対パスならリポジトリルート基準で解決
+    """
+    if not value:
+        return None
+    expanded = os.path.expandvars(value)
+    p = Path(expanded).expanduser()
+    if p.is_absolute():
+        return p
+    return (REPO_ROOT / p).resolve()
+
+
 def setup_job_logger(outdir: Path, object_name: str, date_label: str) -> logging.Logger:
     """並列実行でもログが混ざらないよう、ジョブごとにファイルへ出力する。
 
@@ -50,14 +70,25 @@ def setup_job_logger(outdir: Path, object_name: str, date_label: str) -> logging
     return logger
 
 
-load_dotenv("config.env")
+load_dotenv(REPO_ROOT / "config.env")
 
-DB_PATH = os.getenv("DB_PATH")
-DARK4LOCATE_DIR = os.getenv("DARK4LOCATE_DIR")
+DB_PATH = _resolve_env_path(os.getenv("DB_PATH"))
+DARK4LOCATE_DIR = _resolve_env_path(os.getenv("DARK4LOCATE_DIR"))
 RAID_PC = os.getenv("RAID_PC")
 RAID_DIR = os.getenv("RAID_DIR")
-RAWDATA_DIR= os.getenv("RAWDATA_DIR")
-WORK_DIR = os.getenv("WORK_DIR")
+RAWDATA_DIR = _resolve_env_path(os.getenv("RAWDATA_DIR"))
+NOISE_DIR = _resolve_env_path(os.getenv("NOISE_DIR"))
+WORK_DIR = _resolve_env_path(os.getenv("WORK_DIR"))
+
+_required_paths = {
+    "DB_PATH": DB_PATH,
+    "DARK4LOCATE_DIR": DARK4LOCATE_DIR,
+    "RAWDATA_DIR": RAWDATA_DIR,
+    "WORK_DIR": WORK_DIR,
+}
+_missing = [k for k, v in _required_paths.items() if v is None]
+if _missing:
+    raise RuntimeError(f"Missing required config path(s): {', '.join(_missing)}")
 
 QUALITY_HIST_RANGE = (55000, 65536)
 BINS = 1000
@@ -68,6 +99,27 @@ QUALITY_LOG_PATH = None
 SATURATION_LOG_PATH = None
 
 NUM_PROCESS = 4
+
+
+def get_noise_root_dir() -> Path:
+    """ノイズデータのルートディレクトリを返す。
+
+    NOISE_DIR が未設定の場合は WORK_DIR/noise を使う。
+    """
+    if NOISE_DIR:
+        return Path(NOISE_DIR)
+    return Path(WORK_DIR) / "noise"
+
+
+def get_input_dir(object_name: str, date_label: str) -> Path:
+    """object/date に対応する入力ディレクトリを返す。
+
+    noise だけは NOISE_DIR(or WORK_DIR/noise) を使い、
+    それ以外は従来通り RAWDATA_DIR/object/date を使う。
+    """
+    if object_name == "noise":
+        return get_noise_root_dir() / date_label
+    return Path(RAWDATA_DIR) / object_name / date_label
 
 
 # 出力ディレクトリを作成・返すヘルパー
@@ -157,7 +209,7 @@ def do_scp_raw_fits(date_label: str, object_name: str, base_name_list: List[str]
     # Perform scp per Num1
     for num1 in sorted(num1_set):
         src = f"{RAID_PC}:{RAID_DIR}/{date_label}/spec/spec{date_label}*{num1}*CDS*.fits*"
-        dst = f"{RAWDATA_DIR}/{object_name}/{date_label}"
+        dst = str(get_input_dir(object_name, date_label))
         os.makedirs(dst, exist_ok=True)
         cmd = ["scp", src, dst]
 
@@ -218,11 +270,12 @@ def exptime_to_str(exptime_val) -> str:
 
 
 def do_average_noise(date_label: str):
-    dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
+    dst_dir = get_noise_root_dir() / date_label
     if not dst_dir.exists():
+        logging.warning(f"Noise directory does not exist: {dst_dir}")
         return
     
-    noise_list = list(noise_dir.glob("spec*CDS*.fits"))
+    noise_list = list(dst_dir.glob("spec*CDS*.fits"))
     pass_list, fail_list = quality_check(noise_list)
     if not pass_list:
         logging.warning(f"No noise files passed quality check in {dst_dir}")
@@ -385,7 +438,7 @@ def load_noise(date_label: str, exptime, cds: int | None = None):
     if cds is None:
         cds = 30
 
-    base_dir = Path(RAWDATA_DIR) / "noise" / date_label
+    base_dir = get_noise_root_dir() / date_label
     noise_path = base_dir / f"noise{date_label}_{exptime_str}_CDS{cds:02d}.fits"
     if not noise_path.exists():
         cand = sorted(base_dir.glob(f"noise{date_label}_{exptime_str}_*_CDS{cds:02d}.fits"))
@@ -430,7 +483,7 @@ def load_dark(fitspath):
 
     exptime_str = exptime_to_str(exptime)
 
-    dst_dir = Path(RAWDATA_DIR) / "noise" / date_label
+    dst_dir = get_noise_root_dir() / date_label
 
     # IGA_MODE をファイル名に含めた新形式を優先
     noise_path = None
@@ -458,7 +511,7 @@ def load_dark(fitspath):
 
 
 def do_remove_raw_fits(date_label: str, object_name: str):
-    target_dir = Path(RAWDATA_DIR) / object_name / date_label
+    target_dir = get_input_dir(object_name, date_label)
     cmd = ["rm", "-f", str(target_dir / "spec*-????_CDS*.fits")]
     subprocess.run(" ".join(cmd), shell=True, check=True, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL)
 
@@ -1162,14 +1215,13 @@ if __name__ == "__main__":
     conn.close()
 
     for date_label, base_name_list in darkpath_dict.items():
-        noise_dir = Path(f"{RAWDATA_DIR}/noise/{date_label}")
+        noise_dir = get_noise_root_dir() / date_label
         if not noise_dir.exists():
-            do_scp_raw_fits(date_label, "noise", base_name_list)
+            logging.warning("Noise directory does not exist (skip noise averaging): %s", noise_dir)
+        else:
             gunzip_if_needed(noise_dir, remove_gz=True)
             do_average_noise(date_label)
             do_remove_raw_fits(date_label, "noise")
-        else:
-            logging.info("Noise already exists: %s", noise_dir)
     
     with ProcessPoolExecutor(max_workers=NUM_PROCESS, initializer=worker_init) as ex:
         future_to_job = {

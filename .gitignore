@@ -5,6 +5,7 @@ update_github.sh
 rsync_5min.sh
 irsfspec_reduction2.py
 irsfspec_reduction3.py
+irsfspec_reduction.py.old
 
 # ローカルテスト用ディレクトリ
 local_test/
